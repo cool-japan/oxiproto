@@ -1,0 +1,11 @@
+syntax = "proto3";
+package oneof_map;
+
+message Container {
+  map<string, int32> str_map = 1;
+  oneof kind {
+    int32 int_val = 2;
+    string str_val = 3;
+    bool bool_val = 4;
+  }
+}

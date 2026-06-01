@@ -1,0 +1,39 @@
+[package]
+name = "oxiproto-codegen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust protobuf code generator from FileDescriptorSet to Rust structs/enums"
+keywords = ["protobuf", "codegen", "prost"]
+categories = ["development-tools"]
+
+[features]
+default = []
+format = ["dep:syn", "dep:prettyplease"]
+
+[dependencies]
+prost-types.workspace = true
+oxiproto-core.workspace = true
+
+[dependencies.syn]
+workspace = true
+optional = true
+
+[dependencies.prettyplease]
+workspace = true
+optional = true
+
+[dev-dependencies]
+syn = { workspace = true, features = ["full"] }
+prost = { workspace = true, features = ["derive"] }
+prost-build.workspace = true
+oxiproto-build.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+# oxiproto-wkt = { path = "../oxiproto-wkt" }  # temporarily removed for publish (forward dev-dep); restore after publish complete
+
+[build-dependencies]
+prost-build.workspace = true

@@ -1,0 +1,36 @@
+[package]
+name = "oxiproto-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust protobuf core types"
+keywords = ["protobuf", "prost"]
+categories = ["encoding", "data-structures"]
+
+[features]
+default = ["std"]
+std = ["prost/std", "prost-types/std"]
+alloc = []
+serde = ["dep:serde"]
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true, default-features = false }
+serde = { workspace = true, optional = true, features = ["alloc"] }
+
+[dev-dependencies]
+prost = { workspace = true, features = ["derive"] }
+proptest = "1"
+criterion = "0.8.2"
+serde_json = { workspace = true }
+
+[[bench]]
+name = "wire"
+harness = false
+
+[[bench]]
+name = "message"
+harness = false

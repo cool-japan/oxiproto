@@ -1,0 +1,29 @@
+[package]
+name = "oxiproto-wkt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Well-Known Types interop for OxiProto"
+keywords = ["protobuf", "wkt", "timestamp", "duration"]
+categories = ["encoding", "date-and-time"]
+
+[features]
+default = []
+chrono = ["dep:chrono"]
+time = ["dep:time"]
+
+[dependencies]
+oxiproto-core.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+
+[dependencies.chrono]
+workspace = true
+optional = true
+
+[dependencies.time]
+workspace = true
+optional = true

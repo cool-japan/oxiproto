@@ -1,0 +1,32 @@
+[package]
+name            = "oxiproto-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description     = "OxiProto CLI: compile .proto files to plain Rust structs without protoc"
+keywords        = ["protobuf", "codegen", "cli", "protoc"]
+categories      = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "oxiproto-cli"
+path = "src/main.rs"
+
+[features]
+default = []
+
+[dependencies]
+anstyle          = "1"
+clap             = { workspace = true }
+clap_complete    = "4"
+oxiproto-build   = { workspace = true, features = ["native-parser"] }
+prost-build      = { workspace = true }
+oxiproto-codegen = { workspace = true }
+oxiproto-reflect = { workspace = true }
+oxiproto-json    = { workspace = true }
+prost            = { workspace = true }
+prost-reflect    = { workspace = true }
+prost-types      = { workspace = true }
+serde_json       = { workspace = true }

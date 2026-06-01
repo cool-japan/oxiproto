@@ -1,0 +1,17 @@
+[package]
+name = "oxiproto-reflect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runtime protobuf reflection for OxiProto via prost-reflect"
+keywords = ["protobuf", "reflection", "prost", "dynamic"]
+categories = ["encoding", "data-structures"]
+
+[dependencies]
+oxiproto-core.workspace = true
+prost.workspace = true
+prost-reflect.workspace = true
+prost-types.workspace = true

@@ -1,0 +1,12 @@
+syntax = "proto3";
+package svc;
+
+message Req { string text = 1; }
+message Resp { int32 code = 1; }
+
+service Echo {
+  rpc Unary(Req) returns (Resp);
+  rpc ServerStream(Req) returns (stream Resp);
+  rpc ClientStream(stream Req) returns (Resp);
+  rpc Bidi(stream Req) returns (stream Resp);
+}

@@ -1,0 +1,14 @@
+syntax = "proto3";
+package nested;
+
+message Level1 {
+  int32 id = 1;
+  Level2 child = 2;
+  message Level2 {
+    string name = 1;
+    Level3 inner = 2;
+    message Level3 {
+      bool flag = 1;
+    }
+  }
+}

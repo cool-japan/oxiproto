@@ -1,0 +1,26 @@
+[package]
+name = "oxiproto-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust .proto → Rust codegen (no protoc required)"
+keywords = ["protobuf", "codegen", "build"]
+categories = ["development-tools"]
+
+[features]
+default = ["native-parser"]
+native-parser = ["dep:prost-reflect"]
+
+[dependencies]
+prost.workspace = true
+prost-build.workspace = true
+prost-types.workspace = true
+prost-reflect = { workspace = true, optional = true }
+protox.workspace = true
+oxiproto-core.workspace = true
+
+[dev-dependencies]
+# oxiproto-codegen.workspace = true  # temporarily removed for publish (forward dev-dep); restore after publish complete

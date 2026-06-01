@@ -1,0 +1,196 @@
+#![forbid(unsafe_code)]
+
+/// All token types produced by the lexer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Token {
+    // Keywords
+    Syntax,
+    Package,
+    Import,
+    Option,
+    Message,
+    Enum,
+    Service,
+    Rpc,
+    Returns,
+    Stream,
+    Repeated,
+    Optional,
+    Required,
+    Oneof,
+    Map,
+    Extensions,
+    Extend,
+    Reserved,
+    To,
+    Public,
+    Weak,
+    Group,
+    // Scalar type keywords
+    Double,
+    Float,
+    Int32,
+    Int64,
+    Uint32,
+    Uint64,
+    Sint32,
+    Sint64,
+    Fixed32,
+    Fixed64,
+    Sfixed32,
+    Sfixed64,
+    Bool,
+    /// The `string` keyword.
+    StringType,
+    /// The `bytes` keyword.
+    BytesType,
+    // Literals
+    Ident(String),
+    IntLit(u64),
+    /// Float literal. Note: NaN values will not compare equal — use `is_nan()`.
+    FloatLit(f64),
+    StringLit(String),
+    // Comments
+    LineComment(String),
+    BlockComment(String),
+    // Punctuation
+    /// `{`
+    LBrace,
+    /// `}`
+    RBrace,
+    /// `(`
+    LParen,
+    /// `)`
+    RParen,
+    /// `[`
+    LBracket,
+    /// `]`
+    RBracket,
+    /// `<`
+    LAngle,
+    /// `>`
+    RAngle,
+    Semicolon,
+    Comma,
+    Equals,
+    Dot,
+    Colon,
+    Slash,
+    Plus,
+    Minus,
+    // End of file
+    Eof,
+}
+
+impl Token {
+    /// Returns `Some(Token)` if `ident` is a proto keyword, `None` otherwise.
+    pub fn from_keyword(ident: &str) -> Option<Token> {
+        match ident {
+            "syntax" => Some(Token::Syntax),
+            "package" => Some(Token::Package),
+            "import" => Some(Token::Import),
+            "option" => Some(Token::Option),
+            "message" => Some(Token::Message),
+            "enum" => Some(Token::Enum),
+            "service" => Some(Token::Service),
+            "rpc" => Some(Token::Rpc),
+            "returns" => Some(Token::Returns),
+            "stream" => Some(Token::Stream),
+            "repeated" => Some(Token::Repeated),
+            "optional" => Some(Token::Optional),
+            "required" => Some(Token::Required),
+            "oneof" => Some(Token::Oneof),
+            "map" => Some(Token::Map),
+            "extensions" => Some(Token::Extensions),
+            "extend" => Some(Token::Extend),
+            "reserved" => Some(Token::Reserved),
+            "to" => Some(Token::To),
+            "public" => Some(Token::Public),
+            "weak" => Some(Token::Weak),
+            "group" => Some(Token::Group),
+            "double" => Some(Token::Double),
+            "float" => Some(Token::Float),
+            "int32" => Some(Token::Int32),
+            "int64" => Some(Token::Int64),
+            "uint32" => Some(Token::Uint32),
+            "uint64" => Some(Token::Uint64),
+            "sint32" => Some(Token::Sint32),
+            "sint64" => Some(Token::Sint64),
+            "fixed32" => Some(Token::Fixed32),
+            "fixed64" => Some(Token::Fixed64),
+            "sfixed32" => Some(Token::Sfixed32),
+            "sfixed64" => Some(Token::Sfixed64),
+            "bool" => Some(Token::Bool),
+            "string" => Some(Token::StringType),
+            "bytes" => Some(Token::BytesType),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Token::Syntax => write!(f, "syntax"),
+            Token::Package => write!(f, "package"),
+            Token::Import => write!(f, "import"),
+            Token::Option => write!(f, "option"),
+            Token::Message => write!(f, "message"),
+            Token::Enum => write!(f, "enum"),
+            Token::Service => write!(f, "service"),
+            Token::Rpc => write!(f, "rpc"),
+            Token::Returns => write!(f, "returns"),
+            Token::Stream => write!(f, "stream"),
+            Token::Repeated => write!(f, "repeated"),
+            Token::Optional => write!(f, "optional"),
+            Token::Required => write!(f, "required"),
+            Token::Oneof => write!(f, "oneof"),
+            Token::Map => write!(f, "map"),
+            Token::Extensions => write!(f, "extensions"),
+            Token::Extend => write!(f, "extend"),
+            Token::Reserved => write!(f, "reserved"),
+            Token::To => write!(f, "to"),
+            Token::Public => write!(f, "public"),
+            Token::Weak => write!(f, "weak"),
+            Token::Group => write!(f, "group"),
+            Token::Double => write!(f, "double"),
+            Token::Float => write!(f, "float"),
+            Token::Int32 => write!(f, "int32"),
+            Token::Int64 => write!(f, "int64"),
+            Token::Uint32 => write!(f, "uint32"),
+            Token::Uint64 => write!(f, "uint64"),
+            Token::Sint32 => write!(f, "sint32"),
+            Token::Sint64 => write!(f, "sint64"),
+            Token::Fixed32 => write!(f, "fixed32"),
+            Token::Fixed64 => write!(f, "fixed64"),
+            Token::Sfixed32 => write!(f, "sfixed32"),
+            Token::Sfixed64 => write!(f, "sfixed64"),
+            Token::Bool => write!(f, "bool"),
+            Token::StringType => write!(f, "string"),
+            Token::BytesType => write!(f, "bytes"),
+            Token::Ident(s) => write!(f, "{s}"),
+            Token::IntLit(n) => write!(f, "{n}"),
+            Token::FloatLit(v) => write!(f, "{v}"),
+            Token::StringLit(s) => write!(f, "\"{s}\""),
+            Token::LineComment(s) => write!(f, "//{s}"),
+            Token::BlockComment(s) => write!(f, "/*{s}*/"),
+            Token::LBrace => write!(f, "{{"),
+            Token::RBrace => write!(f, "}}"),
+            Token::LParen => write!(f, "("),
+            Token::RParen => write!(f, ")"),
+            Token::LBracket => write!(f, "["),
+            Token::RBracket => write!(f, "]"),
+            Token::LAngle => write!(f, "<"),
+            Token::RAngle => write!(f, ">"),
+            Token::Semicolon => write!(f, ";"),
+            Token::Comma => write!(f, ","),
+            Token::Equals => write!(f, "="),
+            Token::Dot => write!(f, "."),
+            Token::Colon => write!(f, ":"),
+            Token::Slash => write!(f, "/"),
+            Token::Plus => write!(f, "+"),
+            Token::Minus => write!(f, "-"),
+            Token::Eof => write!(f, "<EOF>"),
+        }
+    }
+}

@@ -1,0 +1,23 @@
+[package]
+name = "oxiproto-json"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Canonical Protobuf-JSON mapping for OxiProto (camelCase, base64 bytes, RFC3339 timestamps)"
+keywords = ["protobuf", "json", "prost", "serialization"]
+categories = ["encoding"]
+
+[features]
+default = []
+
+[dependencies]
+oxiproto-core.workspace = true
+prost.workspace = true
+prost-reflect.workspace = true
+prost-types.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+chrono.workspace = true
