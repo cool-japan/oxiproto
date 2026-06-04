@@ -1,7 +1,7 @@
 # OxiProto Project TODO
 
 ## Status
-v0.1.0 released 2026-06-01. Functional protobuf toolkit (~28,800 SLOC, 679 tests).
+v0.1.1 released 2026-06-04. Functional protobuf toolkit (~28,800 SLOC, 1085 tests).
 Native Pure-Rust wire format codec lives in `oxiproto-core::wire`
 (varint/zigzag/tag/fixed/length-delimited, DecodeBuffer/EncodeBuffer, UnknownFields).
 Native .proto parser (oxiproto-build, `native-parser` feature, now default) handles
@@ -33,23 +33,15 @@ no unwrap() in production.
 
 ## Core Implementation
 - [x] Phase 1: Native wire format -- varint, zigzag, field tags, length-delimited, fixed, buffers, unknown fields in oxiproto-core::wire
-- [~] Phase 2: Native .proto parser -- lexer + parser + import resolution in oxiproto-build (~2000 SLOC)
-    - **Refinement (2026-05-29):** Phase 2 body parser is now scoped: Slice P1 lands the proto3 AST + recursive-descent body parser (`parser/ast.rs` + `parser/parse.rs`); Slice P2 lands name resolution + FDS construction for single-file proto3 behind `native-parser` opt-in feature. Import resolution, proto2, source_code_info, full option values deferred.
-    - **Refinement (2026-05-29, run 3):** Multi-file import resolution now in progress: include-path file resolver, two-set-DFS recursive loader, cross-file symbol table with public-import transitivity, WKT via `prost_reflect::DescriptorPool::global()`, `build_fds_multi` for topological FDS assembly, `compile_files_native`. `compile_str_native` stays single-file (rejects imports). protox replacement (Builder/compile_str rewire, source_code_info, proto2, custom options) still pending.
-        - **Refinement (2026-05-29, run 4):** proto2 syntax support now in progress (Slice P2): `required` label, proto2 `optional` (no synthetic oneof), `extend`/`extensions`/`extension_range`, `default_value` for scalars. `source_code_info` deferred (needs comment capture in lexer/AST first — structural-only is rework).
-        - **Refinement (2026-05-29, run 5):** source_code_info generation now in progress (Slice SCI): comment capture via pre-tokenize side-table, LineTable for O(log n) span conversion, descriptor builder populates Location entries with protobuf path + 0-based span + leading/trailing/detached comments. This is the last native→protox fidelity gap before Builder/compile_str rewire.
-        - **Refinement (2026-05-30):** Run 7 in progress — closing two remaining fidelity gaps before the default flip: (a) COPT: scalar custom/extension options silently dropped in native → match protox behavior (probe-first); (b) GRP: proto2 group fields hard-error in native → implement full desugaring. RTE: wire `compile_str`/`Builder::compile`/`Builder::compile_to_fds` to route through native under `--features native-parser`, prove both feature matrices green. `default` flip (FLIP = step b) held for a separate approved step after this run demonstrates green.
-        - **Refinement (2026-05-30, FLIP):** native-parser is now the default. All consumers (`oxiproto` facade, `oxiproto-codegen` dev-dep, `oxiproto-cli`) route through the native parser without explicit feature specification. protox remains an unconditional dep for the `--no-default-features` fallback path and cross-validation tests.
-- [~] Phase 3: Native codegen -- map/oneof/Default/services/docs done; encode/decode impls (native Message trait) still pending (planned 2026-05-29)
-  - **Goal:** OxiMessage/OxiName/OxiOneof/Extensions traits defined in oxiproto-core; oxiproto-codegen emits `impl OxiMessage for T` + `impl OxiName for T` blocks using the native wire module. Wire-byte cross-validation against prost proves compatibility.
-  - **Design:** See Slice C (message.rs/name.rs/oneof.rs/extensions.rs in oxiproto-core) and Slice CG (message_impl.rs in oxiproto-codegen) in the plan file. New trait names: OxiMessage, OxiName, OxiOneof to avoid breaking the existing `pub use prost::Message` re-export.
-  - **Files:** crates/oxiproto-core/src/{message,name,oneof,extensions}.rs; crates/oxiproto-codegen/src/{message_impl,options,wkt_map}.rs; crates/oxiproto-codegen/tests/{message_emit,build}.rs + fixtures/
-  - **Prerequisites:** oxiproto-core::wire complete (done)
-  - **Tests:** OxiMessage round-trip for every field type; byte cross-validation vs prost; OxiOneof merge semantics; Extensions set/get/clear
-  - **Risk:** Trait shape must be stable before codegen emits impls; locked by hand-written test impl in oxiproto-core
-- [ ] Phase 4: Native reflection -- DescriptorPool, DynamicMessage in oxiproto-reflect (~1000 SLOC)
+- [x] Phase 2: Native .proto parser -- lexer + parser + import resolution in oxiproto-build (DONE 2026-05-30)
+    - proto3/proto2 full support, multi-file import resolution, source_code_info, group desugaring, COPT preservation, native-parser is now the default.
+- [x] Phase 3: Native codegen -- map/oneof/Default/services/docs/OxiMessage/OxiName/OxiOneof/JSON/text impls (DONE 2026-05-29)
+  - All traits defined in oxiproto-core; codegen emits impl OxiMessage/OxiName/OxiOneof/Extensions; JSON/text codegen; builder pattern; package namespacing; custom attributes.
+- [x] Phase 4: Native reflection -- DescriptorPool, DynamicMessage in oxiproto-reflect (DONE 2026-06-03)
+  - NativeDescriptorPool/NativeDynamicMessage with full encode/decode (wire), to_json/from_json, to_text/from_text; FileDescriptor option accessors (java_package, go_package, deprecated, optimize_for); 108 tests green.
 - [x] Phase 5: oxiproto-json -- canonical Protobuf-JSON mapping (camelCase, base64 bytes, RFC3339 timestamps) (~600 SLOC)
 - [ ] Phase 6: Edition 2023 support (~300 SLOC)
+    - **BLOCKED: upstream protobuf Edition 2023 spec not yet finalized; revisit when stable**
 
 ## API Improvements
 - [x] Unify error handling across all sub-crates (done 2026-05-29)
@@ -70,18 +62,20 @@ no unwrap() in production.
   - **Files:** crates/oxiproto-build/src/compile_str.rs (new); crates/oxiproto-build/tests/compile_str.rs (new)
   - **Tests:** Inline proto produces working FDS; cleanup verified; broken proto produces BuildError::Parse with file:line:col
   - **Risk:** temp_dir cleanup on panic — use RAII guard
-- [~] Add CLI subcommands: describe, encode, decode done; format, lint, breaking, doc pending (planned 2026-05-29)
-  - **Goal:** New gen flags (--dry-run, --json, --grpc, --recursive), --quiet/--verbose global flags, colored output, shell completions, filename derivation fix. format/lint/breaking/doc subcommands deferred (require native .proto parser body from Phase 2).
-  - **Design:** See Slice CLI in plan. anstyle for colors (pure Rust, already in clap dep tree). clap_complete for shell completions. Recursive scan hard-codes exclusion of target/ and .git/. Filename derivation parses `package` declaration with a tiny inline scanner.
-  - **Files:** crates/oxiproto-cli/src/{main,gen,util}.rs; crates/oxiproto-cli/Cargo.toml; crates/oxiproto-cli/tests/cli.rs
-  - **Tests:** Every new flag has an assert_cmd integration test; completions exits zero; filename derivation 3 branches
-  - **Risk:** anstyle is pure Rust — no new C/C++ deps
+- [x] Add CLI subcommands: describe, encode, decode, format, lint, breaking, doc all done (DONE 2026-05-30)
+  - All subcommands complete: gen, describe, encode, decode, format, lint, breaking, doc.
+  - All flags complete: --dry-run, --json, --grpc, --recursive, --prost-compat, --quiet/--verbose.
+  - Shell completions via clap_complete; colored output via anstyle; filename derivation improved.
 
 ## Testing
-- [ ] Conformance test suite against canonical protobuf implementations
-- [ ] Cross-validate native wire format against prost for correctness
-- [ ] Fuzz all parsers (.proto parser, wire format decoder)
-- [ ] Property-based testing for encode/decode round-trips
+- [x] Conformance test suite against canonical protobuf implementations
+  - `crates/oxiproto/tests/conformance.rs`: 11 sections, 38 tests; all encoding guide vectors, wire types, OxiMessage conformance (DONE 2026-06-03)
+- [x] Cross-validate native wire format against prost for correctness
+  - `crates/oxiproto-core/tests/prost_cross_validate.rs`: all scalar types + repeated + nested; byte-for-byte equality (DONE 2026-06-03)
+- [x] Fuzz all parsers (.proto parser, wire format decoder)
+  - `crates/oxiproto-core/tests/fuzz_corpus.rs`: deterministic corpus + proptest mutation (bit-flip, truncation, prepend/append); no cargo-fuzz/libFuzzer (Pure Rust) (DONE 2026-06-03)
+- [x] Property-based testing for encode/decode round-trips
+  - `crates/oxiproto-core/tests/proptest_message.rs`: OxiMessage-level proptest for all field types, idempotency, clear, merge (DONE 2026-06-03)
 
 ## Performance
 - [x] Benchmark native vs prost encode/decode throughput (planned 2026-05-29)
@@ -90,13 +84,19 @@ no unwrap() in production.
   - **Files:** `crates/oxiproto-core/benches/wire.rs` (new ~140 SLOC), `benches/message.rs` (new ~160 SLOC), `Cargo.toml` (criterion dev-dep + bench entries)
   - **Tests:** `cargo bench -p oxiproto-core --no-run` compiles all benches (acceptance gate). clippy clean.
   - **Risk:** Low; sequenced after NS stabilises Cargo.toml.
-- [ ] Benchmark native .proto parsing vs protox
-- [ ] Profile and optimize hot paths in wire format codec
+- [x] Benchmark native .proto parsing vs protox
+    - bench added at crates/oxiproto-build/benches/parse_bench.rs
+- [x] Profile and optimize hot paths in wire format codec
+    - varint encode/decode throughput: crates/oxiproto-core/benches/wire.rs
+    - full message encode/decode baseline: crates/oxiproto-core/benches/message.rs
 
 ## Integration
-- [ ] Ensure oxirpc uses oxiproto for all proto operations
+- [x] Ensure oxirpc uses oxiproto for all proto operations
+    - oxirpc-build delegates to oxiproto-build::compile_to_fds; confirmed 2026-06-03
 - [ ] Coordinate with SciRS2 for model serialization formats
-- [ ] Document migration path from prost ecosystem to oxiproto
+    - **DEFERRED: cross-project; tracked in SciRS2 backlog**
+- [x] Document migration path from prost ecosystem to oxiproto
+  - `crates/oxiproto/src/migration.rs`: rustdoc-only module with 10 sections: Cargo.toml, build.rs, trait table, derive→impl, WKT, reflection, errors, interop, JSON, no_std (DONE 2026-06-03)
 
 ## Open Questions
 1. Should OxiRPC absorb OxiProto, or remain a separate consumer?

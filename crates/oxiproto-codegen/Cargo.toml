@@ -30,10 +30,17 @@ optional = true
 syn = { workspace = true, features = ["full"] }
 prost = { workspace = true, features = ["derive"] }
 prost-build.workspace = true
-oxiproto-build.workspace = true
+oxiproto-build = { path = "../oxiproto-build", version = "0.1.1" }
 serde_json.workspace = true
 base64.workspace = true
-# oxiproto-wkt = { path = "../oxiproto-wkt" }  # temporarily removed for publish (forward dev-dep); restore after publish complete
+oxiproto-wkt = { path = "../oxiproto-wkt", version = "0.1.1" }
+
+[dev-dependencies.criterion]
+workspace = true
 
 [build-dependencies]
 prost-build.workspace = true
+
+[[bench]]
+name = "codegen"
+harness = false

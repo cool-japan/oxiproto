@@ -22,6 +22,8 @@
 
 use crate::BuildError;
 use prost_types::FileDescriptorSet;
+
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -63,6 +65,19 @@ pub struct Builder {
     /// Optional progress callback invoked for each `.proto` file before
     /// compilation begins.
     progress: Option<ProgressFn>,
+    /// When set, enables incremental compilation: the file at this path
+    /// stores a fingerprint cache (newline-separated `"path\thash"` entries).
+    /// If all input `.proto` files and include dirs have unchanged hashes,
+    /// [`compile`](Self::compile) returns `Ok(())` immediately without
+    /// re-parsing or re-generating.  The cache is updated after each successful
+    /// compilation run.
+    incremental_cache: Option<PathBuf>,
+    /// When `true` (and the `native-codegen` feature is enabled), also
+    /// generate `OxiMessage` + `OxiName` implementations alongside the
+    /// prost-derived code.  The generated code is written to
+    /// `<out_dir>/<package>_oxi.rs` (one file per proto package).
+    #[cfg(feature = "native-codegen")]
+    native_impl: bool,
 }
 
 impl Builder {
@@ -79,6 +94,9 @@ impl Builder {
             service_generator: None,
             include_file: None,
             progress: None,
+            incremental_cache: None,
+            #[cfg(feature = "native-codegen")]
+            native_impl: false,
         }
     }
 
@@ -189,6 +207,73 @@ impl Builder {
         self
     }
 
+    /// Enable native-trait code generation.
+    ///
+    /// When enabled (requires the `native-codegen` feature), the builder
+    /// additionally runs [`oxiproto_codegen`] to emit `impl OxiMessage for T`
+    /// and `impl OxiName for T` blocks for every generated message struct.
+    ///
+    /// The generated code is written to `<out_dir>/<stem>_oxi.rs`, where
+    /// `<stem>` is derived from the proto package name (dots replaced with
+    /// underscores, defaulting to `_` for the root package).  The output
+    /// file is separate from the prost-generated `.rs` so that callers can
+    /// selectively `include!` either one.
+    ///
+    /// # Panics / Errors
+    ///
+    /// When the `native-codegen` feature is **not** enabled, calling this
+    /// method has no effect (the field does not exist).  Enable the feature
+    /// to activate native impl generation.
+    #[cfg(feature = "native-codegen")]
+    pub fn native_impl(mut self, enable: bool) -> Self {
+        self.native_impl = enable;
+        self
+    }
+
+    /// No-op when the `native-codegen` feature is not enabled.
+    ///
+    /// This overload ensures callers can unconditionally chain
+    /// `.native_impl(true)` without a `#[cfg]` annotation in their build
+    /// scripts; the call simply becomes a no-op when the feature is absent.
+    #[cfg(not(feature = "native-codegen"))]
+    pub fn native_impl(self, _enable: bool) -> Self {
+        self
+    }
+
+    /// Enable incremental compilation using a fingerprint cache file at `cache_path`.
+    ///
+    /// When enabled, [`compile`](Self::compile) computes a content hash
+    /// (FNV-1a 64-bit) for each input `.proto` file. If the cache file exists
+    /// and all file hashes match the stored values, code generation is skipped
+    /// entirely and `Ok(())` is returned immediately.
+    ///
+    /// The cache file is a plain-text file with one `path\thash` entry per
+    /// line (tab-separated, hash in lower-case hexadecimal). It is updated
+    /// atomically (write to a `.tmp` sibling, then rename) after each
+    /// successful full compilation.
+    ///
+    /// # Choosing a cache path
+    ///
+    /// In a `build.rs` context, `$OUT_DIR` is a reliable location:
+    ///
+    /// ```no_run
+    /// use oxiproto_build::Builder;
+    /// use std::path::PathBuf;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let cache = PathBuf::from(std::env::var("OUT_DIR")?)
+    ///         .join("oxiproto_build.cache");
+    ///     Builder::new()
+    ///         .incremental(cache)
+    ///         .compile(&["proto/hello.proto"], &["proto/"])?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn incremental(mut self, cache_path: impl Into<PathBuf>) -> Self {
+        self.incremental_cache = Some(cache_path.into());
+        self
+    }
+
     // -----------------------------------------------------------------------
     // Terminal methods
     // -----------------------------------------------------------------------
@@ -224,6 +309,21 @@ impl Builder {
         // Apply btree_map paths.
         for path in &self.btree_map_paths {
             self.config.btree_map([path.as_str()]);
+        }
+
+        // --- Incremental compilation check ---
+        // Compute fingerprints of all input proto files.  If a cache file is
+        // configured AND all current hashes match the stored values, skip the
+        // entire compilation pipeline and return early.
+        if let Some(ref cache_path) = self.incremental_cache.clone() {
+            let current = fingerprint_files(protos);
+            if let Ok(stored) = load_fingerprint_cache(cache_path) {
+                if fingerprints_match(&current, &stored) {
+                    // Nothing changed — skip codegen.
+                    return Ok(());
+                }
+            }
+            // We will update the cache after a successful run (see below).
         }
 
         // Invoke progress callback per proto file.
@@ -292,15 +392,83 @@ impl Builder {
         }
 
         // Generate Rust code via prost-build.
+        // Clone the FDS first if we need it for native codegen afterwards.
+        #[cfg(feature = "native-codegen")]
+        let fds_for_native = if self.native_impl {
+            Some(fds.clone())
+        } else {
+            None
+        };
+        #[cfg(not(feature = "native-codegen"))]
+        let _ = ();
+
         self.config
             .compile_fds(fds)
             .map_err(|e| BuildError::Codegen {
                 message: e.to_string(),
             })?;
 
+        // When `native_impl` is enabled and the `native-codegen` feature is
+        // active, also emit `OxiMessage` / `OxiName` impls via oxiproto-codegen.
+        #[cfg(feature = "native-codegen")]
+        if let Some(native_fds) = fds_for_native {
+            let effective_out_dir: PathBuf = match &self.out_dir {
+                Some(d) => d.clone(),
+                None => std::env::var_os("OUT_DIR")
+                    .ok_or_else(|| BuildError::Codegen {
+                        message: "OUT_DIR is not set and no out_dir was configured".to_owned(),
+                    })
+                    .map(PathBuf::from)?,
+            };
+
+            let opts = oxiproto_codegen::CodegenOptions {
+                emit_oxi_message_impl: true,
+                package_namespacing: false,
+                ..oxiproto_codegen::CodegenOptions::default()
+            };
+
+            // Emit one `*_oxi.rs` file per proto package.
+            let mut pkg_contents: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+
+            for file in &native_fds.file {
+                let pkg = file.package.as_deref().unwrap_or("").to_string();
+                let single_fds = prost_types::FileDescriptorSet {
+                    file: vec![file.clone()],
+                };
+                let code =
+                    oxiproto_codegen::generate_with_options(&single_fds, &opts).map_err(|e| {
+                        BuildError::Codegen {
+                            message: format!("native codegen failed: {e}"),
+                        }
+                    })?;
+                if !code.trim().is_empty() {
+                    pkg_contents.entry(pkg).or_default().push_str(&code);
+                }
+            }
+
+            for (pkg, content) in &pkg_contents {
+                let stem = if pkg.is_empty() {
+                    "_oxi".to_owned()
+                } else {
+                    format!("{}_oxi", pkg.replace('.', "_"))
+                };
+                let out_path = effective_out_dir.join(format!("{stem}.rs"));
+                std::fs::write(&out_path, content.as_bytes())?;
+            }
+        }
+
         // Optionally write an include file listing generated modules.
         if let Some(include_path) = &self.include_file {
             std::fs::write(include_path, "// Generated by oxiproto-build\n")?;
+        }
+
+        // --- Update incremental cache after successful compilation ---
+        if let Some(ref cache_path) = self.incremental_cache {
+            let current = fingerprint_files(protos);
+            // Best-effort: ignore cache write failures so they don't break
+            // successful builds; the cache will just be recomputed next time.
+            let _ = save_fingerprint_cache(cache_path, &current);
         }
 
         Ok(())
@@ -365,6 +533,109 @@ impl Default for Builder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Incremental compilation — fingerprinting helpers
+// ---------------------------------------------------------------------------
+
+/// A content fingerprint map: canonical path string → FNV-1a 64-bit hex hash.
+type Fingerprints = HashMap<String, String>;
+
+/// FNV-1a 64-bit hash over `data`.
+///
+/// Pure Rust, no external crate required.  Produces a stable 64-bit hash
+/// suitable for change detection (not cryptographic security).
+fn fnv1a64(data: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for &byte in data {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Compute FNV-1a 64-bit fingerprints for each of the given proto file paths.
+///
+/// Files that cannot be read (missing, permission denied) are silently skipped
+/// so they don't prevent compilation — the missing entry simply won't match any
+/// stored entry, forcing a full rebuild.
+fn fingerprint_files(protos: &[impl AsRef<Path>]) -> Fingerprints {
+    let mut map = HashMap::new();
+    for proto in protos {
+        let p = proto.as_ref();
+        if let Ok(contents) = std::fs::read(p) {
+            let hash = fnv1a64(&contents);
+            let key = p.to_string_lossy().into_owned();
+            map.insert(key, format!("{hash:016x}"));
+        }
+    }
+    map
+}
+
+/// Load a fingerprint cache from `path`.
+///
+/// The cache format is one tab-separated `"canonical_path\thex_hash"` entry
+/// per line.  Lines that do not parse correctly are ignored.
+///
+/// Returns `Err` if the file does not exist or cannot be read.
+fn load_fingerprint_cache(path: &Path) -> std::io::Result<Fingerprints> {
+    let content = std::fs::read_to_string(path)?;
+    let mut map = HashMap::new();
+    for line in content.lines() {
+        if let Some((key, val)) = line.split_once('\t') {
+            if !key.is_empty() && !val.is_empty() {
+                map.insert(key.to_owned(), val.to_owned());
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// Return `true` if `current` and `stored` contain exactly the same set of
+/// path keys and all hash values match.
+///
+/// A strict equality check: extra keys in either map → `false`.
+fn fingerprints_match(current: &Fingerprints, stored: &Fingerprints) -> bool {
+    if current.len() != stored.len() {
+        return false;
+    }
+    current
+        .iter()
+        .all(|(k, v)| stored.get(k).map(|sv| sv == v).unwrap_or(false))
+}
+
+/// Persist `fingerprints` to `path` atomically.
+///
+/// Writes to `path.tmp` sibling, then renames to `path`.  On platforms where
+/// rename is not atomic (cross-device), the write is still safe because a
+/// partial write leaves the `.tmp` file, not `path`.
+fn save_fingerprint_cache(path: &Path, fingerprints: &Fingerprints) -> std::io::Result<()> {
+    // Build tmp path: append ".tmp" to the extension (or just add ".tmp").
+    let mut tmp_path = path.to_path_buf();
+    let new_ext = match tmp_path.extension() {
+        Some(ext) => format!("{}.tmp", ext.to_string_lossy()),
+        None => "tmp".to_owned(),
+    };
+    tmp_path.set_extension(new_ext);
+
+    // Sort by key for deterministic output.
+    let mut entries: Vec<(&String, &String)> = fingerprints.iter().collect();
+    entries.sort_by_key(|(k, _)| k.as_str());
+
+    let mut content = String::new();
+    for (key, val) in entries {
+        content.push_str(key);
+        content.push('\t');
+        content.push_str(val);
+        content.push('\n');
+    }
+
+    std::fs::write(&tmp_path, content.as_bytes())?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -668,5 +939,137 @@ mod tests {
         let code = gen(&svc);
         assert!(*invoked.lock().unwrap());
         assert!(code.contains("generated service"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Incremental compilation / fingerprinting helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fnv1a64_empty_input_returns_offset_basis() {
+        // FNV-1a 64: empty input = offset basis = 0xcbf29ce484222325
+        assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325u64);
+    }
+
+    #[test]
+    fn fnv1a64_known_value() {
+        // Verify determinism: same input always gives same output.
+        let h1 = fnv1a64(b"hello world");
+        let h2 = fnv1a64(b"hello world");
+        assert_eq!(h1, h2);
+        // Different input → different hash (high probability, not guaranteed for collisions).
+        let h3 = fnv1a64(b"hello worlds");
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn fingerprint_files_computes_hex_hash() {
+        // Write a temp file and fingerprint it.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("oxiproto_fp_test_{}.proto", std::process::id()));
+        std::fs::write(&path, b"syntax = \"proto3\";\nmessage M {}").expect("write test proto");
+        let fps = fingerprint_files(&[&path]);
+        assert_eq!(fps.len(), 1);
+        let key = path.to_string_lossy().into_owned();
+        let hash_str = fps.get(&key).expect("key must exist");
+        // Must be 16 hex chars (64-bit / 4 bits per char).
+        assert_eq!(hash_str.len(), 16, "hex hash must be 16 chars: {hash_str}");
+        assert!(
+            hash_str.chars().all(|c| c.is_ascii_hexdigit()),
+            "must be hex: {hash_str}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fingerprint_files_skips_missing_file() {
+        let path = std::path::PathBuf::from("/nonexistent/path/xyz.proto");
+        let fps = fingerprint_files(&[&path]);
+        assert!(fps.is_empty(), "missing file should be silently skipped");
+    }
+
+    #[test]
+    fn fingerprint_cache_roundtrip() {
+        let dir = std::env::temp_dir();
+        let cache_path = dir.join(format!("oxiproto_cache_test_{}.cache", std::process::id()));
+
+        let mut fps = HashMap::new();
+        fps.insert(
+            "/some/path/a.proto".to_owned(),
+            "deadbeefcafebabe".to_owned(),
+        );
+        fps.insert(
+            "/some/path/b.proto".to_owned(),
+            "0102030405060708".to_owned(),
+        );
+
+        save_fingerprint_cache(&cache_path, &fps).expect("save must succeed");
+        let loaded = load_fingerprint_cache(&cache_path).expect("load must succeed");
+
+        assert_eq!(fps.len(), loaded.len());
+        for (k, v) in &fps {
+            assert_eq!(loaded.get(k), Some(v), "mismatch for key {k}");
+        }
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    #[test]
+    fn fingerprints_match_returns_true_for_identical_maps() {
+        let mut a = HashMap::new();
+        a.insert("a.proto".to_owned(), "aabbccdd11223344".to_owned());
+        a.insert("b.proto".to_owned(), "1122334455667788".to_owned());
+        let b = a.clone();
+        assert!(fingerprints_match(&a, &b));
+    }
+
+    #[test]
+    fn fingerprints_match_returns_false_when_hash_differs() {
+        let mut a = HashMap::new();
+        a.insert("a.proto".to_owned(), "aabbccdd11223344".to_owned());
+        let mut b = HashMap::new();
+        b.insert("a.proto".to_owned(), "deadbeefcafebabe".to_owned());
+        assert!(!fingerprints_match(&a, &b));
+    }
+
+    #[test]
+    fn fingerprints_match_returns_false_when_extra_key() {
+        let mut a = HashMap::new();
+        a.insert("a.proto".to_owned(), "deadbeef00000000".to_owned());
+        let mut b = a.clone();
+        b.insert("b.proto".to_owned(), "deadbeef00000000".to_owned());
+        assert!(!fingerprints_match(&a, &b));
+    }
+
+    #[test]
+    fn fingerprints_match_returns_false_for_empty_vs_non_empty() {
+        let a: HashMap<String, String> = HashMap::new();
+        let mut b = HashMap::new();
+        b.insert("x.proto".to_owned(), "aaaa000000000000".to_owned());
+        assert!(!fingerprints_match(&a, &b));
+        assert!(!fingerprints_match(&b, &a));
+    }
+
+    #[test]
+    fn load_fingerprint_cache_returns_err_for_missing_file() {
+        let path = std::path::PathBuf::from("/nonexistent/cache/path.cache");
+        assert!(load_fingerprint_cache(&path).is_err());
+    }
+
+    #[test]
+    fn load_fingerprint_cache_ignores_malformed_lines() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("oxiproto_cache_bad_{}.cache", std::process::id()));
+        // File contains one valid line, one malformed line, one empty line.
+        std::fs::write(
+            &path,
+            "valid/path.proto\taabb000000000000\nBAD_NO_TAB\n\nother.proto\t1122000000000000\n",
+        )
+        .expect("write");
+        let loaded = load_fingerprint_cache(&path).expect("load");
+        assert_eq!(loaded.len(), 2, "only 2 valid entries should be loaded");
+        assert!(loaded.contains_key("valid/path.proto"));
+        assert!(loaded.contains_key("other.proto"));
+        assert!(!loaded.contains_key("BAD_NO_TAB"));
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -6,13 +6,13 @@ It eliminates the build-time `protoc` (C++) binary that `prost-build` and `tonic
 `PATH`, by routing all `.proto` parsing and descriptor construction through a native pure-Rust
 parser, and by re-exporting the already-pure `prost` runtime as the wire-format engine.
 
-A consumer with `oxiproto = "0.1.0"` in `[build-dependencies]` regenerates protobuf bindings on a
+A consumer with `oxiproto = "0.1.1"` in `[build-dependencies]` regenerates protobuf bindings on a
 stock `rust:slim` container — no `apt-get install protobuf-compiler`, no cross-compile pre-stage,
 no Bazel toolchain.
 
-## Status: v0.1.0 — 2026-06-01
+## Status: v0.1.1 — 2026-06-04
 
-**679 tests passing, zero clippy warnings, zero rustdoc warnings.**
+**1085 tests passing, zero clippy warnings, zero rustdoc warnings.**
 
 | Milestone | Status |
 |-----------|--------|
@@ -25,7 +25,7 @@ no Bazel toolchain.
 | Phase 1: Native wire format in oxiproto-core::wire | DONE |
 | Phase 2: Native .proto parser (native-parser feature, default) | DONE (multi-file, proto2+3) |
 | Phase 3: Native codegen OxiMessage/OxiName impls | DONE |
-| Phase 4: Native DescriptorPool/DynamicMessage in oxiproto-reflect | IN PROGRESS |
+| Phase 4: Native DescriptorPool/DynamicMessage in oxiproto-reflect | DONE |
 | Phase 6: Edition 2023 support | PLANNED |
 
 ## Workspace Crates
@@ -47,10 +47,10 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxiproto = "0.1.0"
+oxiproto = "0.1.1"
 
 [build-dependencies]
-oxiproto-build = "0.1.0"
+oxiproto-build = "0.1.1"
 ```
 
 In `build.rs`:
@@ -155,7 +155,7 @@ It is depended on by: **OxiRPC** (gRPC), and any future crate using proto wire e
 ## Implementation Statistics
 
 - ~28,800 lines of Rust code (111 source files)
-- 679 tests (nextest), 0 failures
+- 1085 tests (nextest), 0 failures
 - 0 clippy warnings (`-D warnings`, all features)
 - 0 rustdoc warnings (`-D warnings`, all features)
 - MSRV: Rust 1.89 (edition 2021)

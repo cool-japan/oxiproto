@@ -683,3 +683,337 @@ message B { a.A a_field = 1; }
         other => panic!("expected Parse error with 'cycle', got: {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Well-known type compatibility tests (google.protobuf.*)
+// ---------------------------------------------------------------------------
+
+/// Helper: compile a single-file proto that imports WKTs and assert that
+/// all expected WKT file names appear in the resulting FDS.
+fn assert_wkt_in_fds(
+    fds: &prost_types::FileDescriptorSet,
+    expected_wkt_name: &str,
+    test_name: &str,
+) {
+    assert!(
+        fds.file
+            .iter()
+            .any(|f| f.name.as_deref() == Some(expected_wkt_name)),
+        "{test_name}: '{expected_wkt_name}' missing from FDS"
+    );
+}
+
+/// google/protobuf/duration.proto — Duration field resolved correctly.
+#[test]
+fn wkt_duration() {
+    let td = TempDir::new("wkt_duration");
+    let root_path = td.write(
+        "root.proto",
+        r#"syntax = "proto3";
+package dur;
+import "google/protobuf/duration.proto";
+message WithDuration { google.protobuf.Duration elapsed = 1; }
+"#,
+    );
+
+    let fds = compile_files_native(&[&root_path], &[td.path()])
+        .expect("wkt_duration: native compile must succeed");
+
+    assert_topo_valid(&fds, "wkt_duration");
+    assert_wkt_in_fds(&fds, "google/protobuf/duration.proto", "wkt_duration");
+
+    let root_fdp = fds
+        .file
+        .iter()
+        .find(|f| f.name.as_deref() == Some("root.proto"))
+        .expect("root.proto not found");
+    let field = &root_fdp.message_type[0].field[0];
+    assert_eq!(
+        field.type_name,
+        Some(".google.protobuf.Duration".to_owned()),
+        "wkt_duration: type_name must be .google.protobuf.Duration"
+    );
+}
+
+/// google/protobuf/empty.proto — Empty used as RPC request/response.
+#[test]
+fn wkt_empty_in_service() {
+    let td = TempDir::new("wkt_empty");
+    let root_path = td.write(
+        "root.proto",
+        r#"syntax = "proto3";
+package emptysvc;
+import "google/protobuf/empty.proto";
+service PingService {
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+"#,
+    );
+
+    let fds = compile_files_native(&[&root_path], &[td.path()])
+        .expect("wkt_empty_in_service: native compile must succeed");
+
+    assert_topo_valid(&fds, "wkt_empty_in_service");
+    assert_wkt_in_fds(&fds, "google/protobuf/empty.proto", "wkt_empty_in_service");
+
+    let root_fdp = fds
+        .file
+        .iter()
+        .find(|f| f.name.as_deref() == Some("root.proto"))
+        .expect("root.proto not found");
+    let svc = &root_fdp.service[0];
+    let method = &svc.method[0];
+    assert_eq!(
+        method.input_type.as_deref(),
+        Some(".google.protobuf.Empty"),
+        "wkt_empty_in_service: input_type must be .google.protobuf.Empty"
+    );
+    assert_eq!(
+        method.output_type.as_deref(),
+        Some(".google.protobuf.Empty"),
+        "wkt_empty_in_service: output_type must be .google.protobuf.Empty"
+    );
+}
+
+/// google/protobuf/any.proto — Any field inside a message.
+#[test]
+fn wkt_any() {
+    let td = TempDir::new("wkt_any");
+    let root_path = td.write(
+        "root.proto",
+        r#"syntax = "proto3";
+package anytest;
+import "google/protobuf/any.proto";
+message Envelope { google.protobuf.Any payload = 1; }
+"#,
+    );
+
+    let fds = compile_files_native(&[&root_path], &[td.path()])
+        .expect("wkt_any: native compile must succeed");
+
+    assert_topo_valid(&fds, "wkt_any");
+    assert_wkt_in_fds(&fds, "google/protobuf/any.proto", "wkt_any");
+
+    let root_fdp = fds
+        .file
+        .iter()
+        .find(|f| f.name.as_deref() == Some("root.proto"))
+        .expect("root.proto not found");
+    let field = &root_fdp.message_type[0].field[0];
+    assert_eq!(
+        field.type_name,
+        Some(".google.protobuf.Any".to_owned()),
+        "wkt_any: type_name must be .google.protobuf.Any"
+    );
+}
+
+/// google/protobuf/struct.proto — Struct and Value used as fields.
+#[test]
+fn wkt_struct() {
+    let td = TempDir::new("wkt_struct");
+    let root_path = td.write(
+        "root.proto",
+        r#"syntax = "proto3";
+package structtest;
+import "google/protobuf/struct.proto";
+message JsonPayload {
+  google.protobuf.Struct metadata = 1;
+  google.protobuf.Value value = 2;
+}
+"#,
+    );
+
+    let fds = compile_files_native(&[&root_path], &[td.path()])
+        .expect("wkt_struct: native compile must succeed");
+
+    assert_topo_valid(&fds, "wkt_struct");
+    assert_wkt_in_fds(&fds, "google/protobuf/struct.proto", "wkt_struct");
+
+    let root_fdp = fds
+        .file
+        .iter()
+        .find(|f| f.name.as_deref() == Some("root.proto"))
+        .expect("root.proto not found");
+    let fields = &root_fdp.message_type[0].field;
+    assert_eq!(
+        fields[0].type_name,
+        Some(".google.protobuf.Struct".to_owned()),
+        "wkt_struct: field[0] type_name"
+    );
+    assert_eq!(
+        fields[1].type_name,
+        Some(".google.protobuf.Value".to_owned()),
+        "wkt_struct: field[1] type_name"
+    );
+}
+
+/// google/protobuf/field_mask.proto — FieldMask used as a field type.
+#[test]
+fn wkt_field_mask() {
+    let td = TempDir::new("wkt_field_mask");
+    let root_path = td.write(
+        "root.proto",
+        r#"syntax = "proto3";
+package fmtest;
+import "google/protobuf/field_mask.proto";
+message UpdateRequest {
+  string resource_name = 1;
+  google.protobuf.FieldMask update_mask = 2;
+}
+"#,
+    );
+
+    let fds = compile_files_native(&[&root_path], &[td.path()])
+        .expect("wkt_field_mask: native compile must succeed");
+
+    assert_topo_valid(&fds, "wkt_field_mask");
+    assert_wkt_in_fds(&fds, "google/protobuf/field_mask.proto", "wkt_field_mask");
+
+    let root_fdp = fds
+        .file
+        .iter()
+        .find(|f| f.name.as_deref() == Some("root.proto"))
+        .expect("root.proto not found");
+    let field = &root_fdp.message_type[0].field[1];
+    assert_eq!(
+        field.type_name,
+        Some(".google.protobuf.FieldMask".to_owned()),
+        "wkt_field_mask: type_name must be .google.protobuf.FieldMask"
+    );
+}
+
+/// google/protobuf/wrappers.proto — Int32Value and StringValue wrapper types.
+#[test]
+fn wkt_wrappers() {
+    let td = TempDir::new("wkt_wrappers");
+    let root_path = td.write(
+        "root.proto",
+        r#"syntax = "proto3";
+package wrappers;
+import "google/protobuf/wrappers.proto";
+message Wrapped {
+  google.protobuf.StringValue name = 1;
+  google.protobuf.Int32Value count = 2;
+  google.protobuf.BoolValue enabled = 3;
+}
+"#,
+    );
+
+    let fds = compile_files_native(&[&root_path], &[td.path()])
+        .expect("wkt_wrappers: native compile must succeed");
+
+    assert_topo_valid(&fds, "wkt_wrappers");
+    assert_wkt_in_fds(&fds, "google/protobuf/wrappers.proto", "wkt_wrappers");
+
+    let root_fdp = fds
+        .file
+        .iter()
+        .find(|f| f.name.as_deref() == Some("root.proto"))
+        .expect("root.proto not found");
+    let fields = &root_fdp.message_type[0].field;
+    assert_eq!(
+        fields[0].type_name,
+        Some(".google.protobuf.StringValue".to_owned()),
+        "wkt_wrappers: field[0] type_name"
+    );
+    assert_eq!(
+        fields[1].type_name,
+        Some(".google.protobuf.Int32Value".to_owned()),
+        "wkt_wrappers: field[1] type_name"
+    );
+    assert_eq!(
+        fields[2].type_name,
+        Some(".google.protobuf.BoolValue".to_owned()),
+        "wkt_wrappers: field[2] type_name"
+    );
+}
+
+/// Multiple WKT types in a single file — topo order must still be valid.
+#[test]
+fn wkt_multiple_in_one_file() {
+    let td = TempDir::new("wkt_multi");
+    let root_path = td.write(
+        "root.proto",
+        r#"syntax = "proto3";
+package multi;
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/any.proto";
+message Event {
+  google.protobuf.Timestamp occurred_at = 1;
+  google.protobuf.Duration duration = 2;
+  google.protobuf.Any details = 3;
+}
+"#,
+    );
+
+    let fds = compile_files_native(&[&root_path], &[td.path()])
+        .expect("wkt_multiple_in_one_file: native compile must succeed");
+
+    assert_topo_valid(&fds, "wkt_multiple_in_one_file");
+    assert_wkt_in_fds(
+        &fds,
+        "google/protobuf/timestamp.proto",
+        "wkt_multiple_in_one_file",
+    );
+    assert_wkt_in_fds(
+        &fds,
+        "google/protobuf/duration.proto",
+        "wkt_multiple_in_one_file",
+    );
+    assert_wkt_in_fds(
+        &fds,
+        "google/protobuf/any.proto",
+        "wkt_multiple_in_one_file",
+    );
+
+    let root_fdp = fds
+        .file
+        .iter()
+        .find(|f| f.name.as_deref() == Some("root.proto"))
+        .expect("root.proto not found");
+    let fields = &root_fdp.message_type[0].field;
+    assert_eq!(
+        3,
+        fields.len(),
+        "wkt_multiple_in_one_file: expected 3 fields"
+    );
+}
+
+/// Cross-validate WKT imports: both native and protox produce the same
+/// dependency list and field type_names for a Timestamp-bearing message.
+#[test]
+fn wkt_cross_validate_with_protox() {
+    let td = TempDir::new("wkt_xval");
+    let root_path = td.write(
+        "root.proto",
+        r#"syntax = "proto3";
+package xval;
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+message TimeRange {
+  google.protobuf.Timestamp start = 1;
+  google.protobuf.Timestamp end = 2;
+  google.protobuf.Duration span = 3;
+}
+"#,
+    );
+
+    let mut native_fds = compile_files_native(&[&root_path], &[td.path()])
+        .expect("wkt_cross_validate_with_protox: native compile failed");
+    let mut protox_fds = compile_to_fds(&[&root_path], &[td.path()])
+        .expect("wkt_cross_validate_with_protox: protox compile failed");
+
+    let native_map = normalize_fds_map(&mut native_fds);
+    let protox_map = normalize_fds_map(&mut protox_fds);
+
+    // The root file must be present in both
+    let native_root = native_map
+        .get("root.proto")
+        .expect("native: root.proto missing");
+    let protox_root = protox_map
+        .get("root.proto")
+        .expect("protox: root.proto missing");
+
+    assert_file_structure_eq(native_root, protox_root, "wkt_cross_validate_with_protox");
+}

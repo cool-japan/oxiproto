@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.89"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
@@ -21,14 +21,14 @@ repository = "https://github.com/cool-japan/oxiproto"
 description = "OxiProto is the COOLJAPAN Pure-Rust Protocol Buffers stack."
 
 [workspace.dependencies]
-oxiproto-core = { path = "crates/oxiproto-core", version = "0.1.0" }
-oxiproto-build = { path = "crates/oxiproto-build", version = "0.1.0" }
-oxiproto = { path = "crates/oxiproto", version = "0.1.0" }
-oxiproto-reflect = { path = "crates/oxiproto-reflect", version = "0.1.0" }
-oxiproto-wkt = { path = "crates/oxiproto-wkt", version = "0.1.0" }
-oxiproto-codegen = { path = "crates/oxiproto-codegen", version = "0.1.0" }
-oxiproto-cli     = { path = "crates/oxiproto-cli", version = "0.1.0" }
-oxiproto-json    = { path = "crates/oxiproto-json", version = "0.1.0" }
+oxiproto-core = { path = "crates/oxiproto-core", version = "0.1.1" }
+oxiproto-build = { path = "crates/oxiproto-build", version = "0.1.1" }
+oxiproto = { path = "crates/oxiproto", version = "0.1.1" }
+oxiproto-reflect = { path = "crates/oxiproto-reflect", version = "0.1.1" }
+oxiproto-wkt = { path = "crates/oxiproto-wkt", version = "0.1.1" }
+oxiproto-codegen = { path = "crates/oxiproto-codegen", version = "0.1.1" }
+oxiproto-cli     = { path = "crates/oxiproto-cli", version = "0.1.1" }
+oxiproto-json    = { path = "crates/oxiproto-json", version = "0.1.1" }
 clap             = { version = "4.6.1", features = ["derive"] }
 prost = { version = "0.14.3", default-features = false }
 prost-build = { version = "0.14.3" }
@@ -42,3 +42,6 @@ serde_json = { version = "1.0" }
 base64 = { version = "0.22" }
 syn = { version = "2", features = ["full"] }
 prettyplease = { version = "0.2" }
+proptest = { version = "1.6" }
+criterion = { version = "0.5" }
+clap_mangen = { version = "0.3" }

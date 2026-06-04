@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use oxiproto_wkt::{DurationExt, TimestampExt};
 use prost::bytes::Bytes;
 use prost_reflect::{
     DescriptorPool, DynamicMessage, FieldDescriptor, Kind, MapKey, MessageDescriptor, Value,
 };
+use prost_types::{Duration as ProtoDuration, Timestamp};
 use serde_json::Value as JsonValue;
 
 use crate::codec::JsonCodec;
@@ -439,12 +441,11 @@ fn decode_timestamp(
         got: json_type_name(value),
     })?;
 
-    let dt = chrono::DateTime::parse_from_rfc3339(s)
+    // Use oxiproto-wkt's pure-Rust RFC 3339 parser (no chrono dep needed).
+    let ts = Timestamp::from_rfc3339(s)
         .map_err(|e| JsonError::MalformedValue(format!("invalid RFC3339 timestamp '{s}': {e}")))?;
 
     let mut msg = DynamicMessage::new(descriptor.clone());
-    let seconds = dt.timestamp();
-    let nanos = dt.timestamp_subsec_nanos() as i32;
 
     let secs_field = descriptor
         .get_field_by_name("seconds")
@@ -453,9 +454,9 @@ fn decode_timestamp(
         .get_field_by_name("nanos")
         .ok_or_else(|| JsonError::MalformedValue("Timestamp missing 'nanos' field".to_owned()))?;
 
-    msg.try_set_field(&secs_field, Value::I64(seconds))
+    msg.try_set_field(&secs_field, Value::I64(ts.seconds))
         .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
-    msg.try_set_field(&nanos_field, Value::I32(nanos))
+    msg.try_set_field(&nanos_field, Value::I32(ts.nanos))
         .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
 
     Ok(msg)
@@ -471,12 +472,9 @@ fn decode_duration(
         got: json_type_name(value),
     })?;
 
-    let s = s.strip_suffix('s').ok_or_else(|| {
-        JsonError::MalformedValue(format!("duration string must end with 's': '{s}'"))
-    })?;
-
-    let (seconds, nanos) = parse_duration_str(s)
-        .map_err(|e| JsonError::MalformedValue(format!("invalid duration '{s}s': {e}")))?;
+    // Use oxiproto-wkt's duration string parser.
+    let dur = ProtoDuration::from_duration_string(s)
+        .map_err(|e| JsonError::MalformedValue(format!("invalid duration '{s}': {e}")))?;
 
     let mut msg = DynamicMessage::new(descriptor.clone());
     let secs_field = descriptor
@@ -486,37 +484,12 @@ fn decode_duration(
         .get_field_by_name("nanos")
         .ok_or_else(|| JsonError::MalformedValue("Duration missing 'nanos' field".to_owned()))?;
 
-    msg.try_set_field(&secs_field, Value::I64(seconds))
+    msg.try_set_field(&secs_field, Value::I64(dur.seconds))
         .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
-    msg.try_set_field(&nanos_field, Value::I32(nanos))
+    msg.try_set_field(&nanos_field, Value::I32(dur.nanos))
         .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
 
     Ok(msg)
-}
-
-/// Parse a duration string like `"1.5"` or `"-3600"` (without the trailing
-/// `s`).  Returns `(seconds, nanos)`.
-fn parse_duration_str(s: &str) -> Result<(i64, i32), String> {
-    if let Some(dot) = s.find('.') {
-        let int_part = &s[..dot];
-        let frac_part = &s[dot + 1..];
-
-        let secs: i64 = int_part
-            .parse()
-            .map_err(|_| format!("invalid integer part '{int_part}'"))?;
-        let negative = secs < 0 || int_part.starts_with('-');
-
-        // Pad/truncate frac to 9 digits
-        let frac_padded = format!("{:0<9}", &frac_part[..frac_part.len().min(9)]);
-        let nanos_abs: i32 = frac_padded
-            .parse()
-            .map_err(|_| format!("invalid fractional part '{frac_part}'"))?;
-        let nanos = if negative { -nanos_abs } else { nanos_abs };
-        Ok((secs, nanos))
-    } else {
-        let secs: i64 = s.parse().map_err(|_| format!("invalid integer '{s}'"))?;
-        Ok((secs, 0))
-    }
 }
 
 // ---------------------------------------------------------------------------

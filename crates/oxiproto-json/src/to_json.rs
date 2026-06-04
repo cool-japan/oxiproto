@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::{DateTime, TimeZone, Utc};
+use oxiproto_wkt::{DurationExt, TimestampExt};
 use prost_reflect::{DynamicMessage, FieldDescriptor, Kind, MapKey, ReflectMessage, Value};
+use prost_types::{Duration as ProtoDuration, Timestamp};
 use serde_json::{Map as JsonMap, Number, Value as JsonValue};
 
 use crate::codec::JsonCodec;
@@ -190,8 +191,9 @@ fn scalar_value_to_json(value: &Value, kind: &Kind, codec: &JsonCodec) -> JsonVa
 
 /// Encode a `google.protobuf.Timestamp` as an RFC 3339 string.
 ///
-/// Format: `"YYYY-MM-DDTHH:MM:SSZ"` when nanos == 0, or
-/// `"YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ"` (trimmed trailing zeros) otherwise.
+/// Delegates to [`oxiproto_wkt::TimestampExt::to_rfc3339`] for canonical
+/// pure-Rust formatting.  Falls back to `"0001-01-01T00:00:00Z"` if the
+/// seconds value is out of range.
 fn timestamp_to_json(msg: &DynamicMessage) -> JsonValue {
     let seconds = msg
         .get_field_by_name("seconds")
@@ -202,47 +204,16 @@ fn timestamp_to_json(msg: &DynamicMessage) -> JsonValue {
         .and_then(|v| v.as_i32())
         .unwrap_or(0);
 
-    let s = timestamp_to_rfc3339(seconds, nanos);
+    let ts = Timestamp { seconds, nanos };
+    let s = ts
+        .to_rfc3339()
+        .unwrap_or_else(|_| String::from("0001-01-01T00:00:00Z"));
     JsonValue::String(s)
 }
 
-pub(crate) fn timestamp_to_rfc3339(seconds: i64, nanos: i32) -> String {
-    let dt: DateTime<Utc> = match Utc.timestamp_opt(seconds, nanos.max(0) as u32) {
-        chrono::LocalResult::Single(dt) => dt,
-        _ => return String::from("0001-01-01T00:00:00Z"),
-    };
-
-    if nanos == 0 {
-        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
-    } else {
-        // Format with nanoseconds, then trim trailing zeros before 'Z'
-        let raw = dt.format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string();
-        trim_trailing_zeros_before_z(&raw)
-    }
-}
-
-/// Trim trailing zeros from the fractional-seconds part of an RFC 3339 string.
-///
-/// E.g. `"2023-01-01T00:00:00.500000000Z"` → `"2023-01-01T00:00:00.5Z"`.
-fn trim_trailing_zeros_before_z(s: &str) -> String {
-    if let Some(dot_pos) = s.find('.') {
-        // Find the 'Z' at the end
-        let (main, z) = s.split_at(s.len() - 1); // strip trailing 'Z'
-        debug_assert_eq!(z, "Z");
-        let trimmed = main.trim_end_matches('0');
-        // If all fractional digits were zeros, trim the dot too
-        let trimmed = if trimmed.ends_with('.') {
-            &trimmed[..dot_pos]
-        } else {
-            trimmed
-        };
-        format!("{}Z", trimmed)
-    } else {
-        s.to_owned()
-    }
-}
-
 /// Encode a `google.protobuf.Duration` as a string like `"1.5s"` or `"-1s"`.
+///
+/// Delegates to [`oxiproto_wkt::DurationExt::to_duration_string`].
 fn duration_to_json(msg: &DynamicMessage) -> JsonValue {
     let seconds = msg
         .get_field_by_name("seconds")
@@ -253,25 +224,8 @@ fn duration_to_json(msg: &DynamicMessage) -> JsonValue {
         .and_then(|v| v.as_i32())
         .unwrap_or(0);
 
-    JsonValue::String(duration_to_string(seconds, nanos))
-}
-
-pub(crate) fn duration_to_string(seconds: i64, nanos: i32) -> String {
-    if nanos == 0 {
-        return format!("{}s", seconds);
-    }
-
-    // The sign of the duration is carried by seconds (nanos magnitude only).
-    let nanos_abs = nanos.unsigned_abs();
-    let frac_str = format!("{:09}", nanos_abs);
-    let frac_trimmed = frac_str.trim_end_matches('0');
-
-    if seconds < 0 {
-        // Negative duration, e.g. -1.5s: seconds=-1, nanos=-500000000
-        format!("{}.{}s", seconds, frac_trimmed)
-    } else {
-        format!("{}.{}s", seconds, frac_trimmed)
-    }
+    let dur = ProtoDuration { seconds, nanos };
+    JsonValue::String(dur.to_duration_string())
 }
 
 /// Convert snake_case field name to camelCase.

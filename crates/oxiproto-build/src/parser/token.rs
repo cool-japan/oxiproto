@@ -5,6 +5,8 @@
 pub enum Token {
     // Keywords
     Syntax,
+    /// The `edition` keyword (Protobuf Editions, e.g. `edition = "2023";`).
+    Edition,
     Package,
     Import,
     Option,
@@ -87,6 +89,7 @@ impl Token {
     pub fn from_keyword(ident: &str) -> Option<Token> {
         match ident {
             "syntax" => Some(Token::Syntax),
+            "edition" => Some(Token::Edition),
             "package" => Some(Token::Package),
             "import" => Some(Token::Import),
             "option" => Some(Token::Option),
@@ -132,6 +135,7 @@ impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Token::Syntax => write!(f, "syntax"),
+            Token::Edition => write!(f, "edition"),
             Token::Package => write!(f, "package"),
             Token::Import => write!(f, "import"),
             Token::Option => write!(f, "option"),

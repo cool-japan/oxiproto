@@ -27,3 +27,11 @@ optional = true
 [dependencies.time]
 workspace = true
 optional = true
+
+[dev-dependencies]
+criterion.workspace = true
+prost = { workspace = true, features = ["derive"] }
+
+[[bench]]
+name = "wkt"
+harness = false

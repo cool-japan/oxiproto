@@ -148,3 +148,11 @@ pub mod codegen {
 pub mod json {
     pub use oxiproto_json::*;
 }
+
+/// Migration guide: prost → OxiProto.
+///
+/// This module contains only documentation explaining how to migrate from the
+/// `prost` ecosystem to the OxiProto stack.  See the module-level rustdoc for
+/// the full guide (Cargo.toml changes, build.rs, trait equivalence, WKT, JSON,
+/// reflection, no_std, and interoperability during incremental migration).
+pub mod migration;

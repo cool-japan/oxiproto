@@ -15,3 +15,22 @@ oxiproto-core.workspace = true
 prost.workspace = true
 prost-reflect.workspace = true
 prost-types.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+oxiproto-build = { path = "../oxiproto-build", version = "0.1.1" }
+prost = { workspace = true, features = ["derive"] }
+criterion = "0.8.2"
+
+[[bench]]
+name    = "pool_bench"
+harness = false
+
+[[bench]]
+name    = "dynamic_bench"
+harness = false
+
+[[bench]]
+name    = "memory_bench"
+harness = false

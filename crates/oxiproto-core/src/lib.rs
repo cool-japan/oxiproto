@@ -25,10 +25,12 @@ extern crate alloc;
 
 pub mod wire;
 
+pub mod arena;
 pub mod extensions;
 pub mod message;
 pub mod name;
 pub mod oneof;
+pub mod reflect_bridge;
 
 pub use prost::Message;
 pub use prost::Name;

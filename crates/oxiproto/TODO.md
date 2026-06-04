@@ -9,12 +9,12 @@ prost_types, and the native `wire` module from oxiproto-core. Provides a
 ## Core Implementation
 - [x] Add `prelude` module for glob import of common types: Message, Name, OxiProtoError, OxiProtoResult, wire buffers
 - [x] Add `json` feature and module for oxiproto-json (canonical Protobuf-JSON mapping)
-- [ ] Add `validate` feature and module for runtime field validation once implemented (10 SLOC)
+- [~] Add `validate` feature and module for runtime field validation once implemented (10 SLOC) — DEFERRED: blocked on Open Question #4 (buf.validate, v0.2+ decision)
 - [x] Add `oxiproto::version()` returning crate version string
 - [x] Re-export the native `wire` module at the top level (always available)
 
 ## API Improvements
-- [ ] Remove feature gates once native implementations replace prost/protox (facade should work with empty features)
+- [~] Remove feature gates once native implementations replace prost/protox (facade should work with empty features) — DEFERRED: requires all 4 trait-level blockers resolved (wkt/any_ext, reflect/lib, cli/convert, build/builder); see parent TODO "OxiMessage → Message alias cutover"
 - [x] Add top-level convenience functions: `oxiproto::encode(msg)`, `oxiproto::decode::<T>(bytes)` (done 2026-05-29)
   - **Goal:** `pub fn encode<T: OxiMessage>(msg: &T) -> Vec<u8>` and `pub fn decode<T: OxiMessage>(bytes: &[u8]) -> OxiProtoResult<T>` at top level of facade crate. Also expose OxiMessage/OxiName/OxiOneof/Extensions in prelude.
   - **Files:** crates/oxiproto/src/lib.rs (modify)
@@ -22,7 +22,7 @@ prost_types, and the native `wire` module from oxiproto-core. Provides a
 - [x] Add `oxiproto::compile_protos` convenience re-export at top level (done 2026-05-29)
   - **Goal:** `#[cfg(feature = "build")] pub use oxiproto_build::compile_protos;` at the top level of crates/oxiproto/src/lib.rs for ergonomic use in build.rs.
   - **Files:** crates/oxiproto/src/lib.rs (modify)
-- [ ] Ensure all doc examples compile without specifying features
+- [x] Ensure all doc examples compile without specifying features (verified: 5 doc-tests run, 3 pass, 2 intentionally ignored via ```ignore)
 - [x] Add comprehensive crate-level documentation with usage examples for each feature (done 2026-05-29)
   - **Files:** crates/oxiproto/src/lib.rs (modify: doc comments with feature-gated examples, trait overview table)
 
@@ -32,11 +32,11 @@ prost_types, and the native `wire` module from oxiproto-core. Provides a
   - **Design:** crates/oxiproto/build.rs compiles tests/fixtures/user.proto into OUT_DIR. Test include!()s the generated file. Prost-derived reference type for byte cross-validation lives in the test module.
   - **Files:** crates/oxiproto/build.rs (new); crates/oxiproto/tests/integration.rs (new); crates/oxiproto/tests/fixtures/user.proto (new); Cargo.toml (add dev-deps: prost, prost-build, oxiproto-codegen; build-deps: prost-build)
   - **Tests:** 7 integration tests: oxi_name_correct, oxi_message_encode_decode_round_trip, oxi_message_encode_empty_is_zero_bytes, encoded_len_matches_actual_length, wire_byte_cross_validation_vs_prost, decode_with_unknown_fields_preserves_round_trip, codegen_with_oxi_message_impl_produces_valid_rust
-- [~] Test that each feature flag enables exactly the expected module (planned future)
-  - **Files:** crates/oxiproto/tests/integration.rs (include feature-specific checks)
-- [ ] Test that facade types match sub-crate types (no accidental shadowing)
-- [~] Test that default features (empty) still compiles and provides core types (planned future)
-  - **Files:** crates/oxiproto/tests/integration.rs
+- [x] Test that each feature flag enables exactly the expected module — done 2026-06-03: tests/feature_flags.rs with per-feature compile-time and runtime checks for build/reflect/wkt/codegen/json modules; isolation documented via cfg(not(feature)) guards
+  - **Files:** crates/oxiproto/tests/feature_flags.rs (new)
+- [x] Test that facade types match sub-crate types (no accidental shadowing) — done 2026-06-03: tests/type_identity.rs with 10 TypeId checks covering OxiProtoError, prost_types, wire::{DecodeBuffer,EncodeBuffer,WireType,UnknownFields}, and prelude items
+- [x] Test that default features (empty) still compiles and provides core types — done 2026-06-03: feature_flags.rs default_features_core_types_accessible, wire_module_always_available, prelude_always_available, encode_decode_helpers_always_available all run under --no-default-features (25/25 pass)
+  - **Files:** crates/oxiproto/tests/feature_flags.rs (new)
 - [x] Runtime JSON round-trip execution harness: build.rs drives codegen into OUT_DIR, tests actually execute to_json/from_json (done 2026-05-29)
   - **Goal:** Upgrade `tests/json_roundtrip.rs` from string-contains checks to compiled + EXECUTED `to_json`/`from_json` calls. `build.rs` (under opt-in `json-runtime-harness` feature) drives `oxiproto-codegen` (JSON mode) to emit a fixture `.rs` into `$OUT_DIR`; the test `include!`s it and asserts actual values.
   - **Design:** Added unconditional build-deps `prost-types` + `oxiproto-codegen` (not optional) and feature `json-runtime-harness = []` (no feature-dep, plain gate). FDS constructed in-process in `build.rs` (prost_types literals, no .proto file needed). Generated fixture: AllScalars, BigInts, BinaryData, Floats, RepMsg, EnumMsg, CamelMsg (OneofMsg excluded — see DEVIATION below). Tests execute `to_json`/`from_json` directly. Run with `cargo nextest -p oxiproto --features json-runtime-harness`.
@@ -47,9 +47,9 @@ prost_types, and the native `wire` module from oxiproto-core. Provides a
   - **Risk:** `build.rs` breakage fails the crate. Mitigation: verify `cargo build -p oxiproto --features json-runtime-harness` and test run in isolation before marking done. Optional build-deps keep default consumers clean.
 
 ## Performance
-- [ ] Verify zero overhead from facade re-exports (compile-time only cost, no runtime cost)
+- [x] Verify zero overhead from facade re-exports (compile-time only cost, no runtime cost) — done 2026-06-03: TypeId equality tests confirm no wrapper types; version_is_inlineable_const_expr confirms inlineable path
 
 ## Integration
-- [ ] Ensure oxirpc depends on oxiproto for proto types (not directly on prost)
-- [ ] Ensure SciRS2 / ML crates can use oxiproto for model serialization
-- [ ] Document migration path from prost to oxiproto for existing users
+- [~] Ensure oxirpc depends on oxiproto for proto types (not directly on prost) — DEFERRED: oxirpc-core uses prost::Message for tonic/ProstCodec integration; cutover blocked on OxiMessage→Message alias migration (see parent TODO)
+- [~] Ensure SciRS2 / ML crates can use oxiproto for model serialization — DEFERRED: cross-workspace integration, out of scope for this crate
+- [~] Document migration path from prost to oxiproto for existing users — DEFERRED: documentation task, defer to /readme run

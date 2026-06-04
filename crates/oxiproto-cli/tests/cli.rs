@@ -1523,3 +1523,298 @@ message bad_message {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// man subcommand tests
+// ---------------------------------------------------------------------------
+
+/// `man` exits zero and produces at least one man-page file.
+#[test]
+fn man_exits_zero_and_produces_files() {
+    let tmp = tmp_dir("man_basic");
+
+    let output = Command::new(binary())
+        .args(["man", "--output", tmp.to_str().expect("utf8")])
+        .output()
+        .expect("spawn man");
+
+    assert!(
+        output.status.success(),
+        "man exited with {}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // At least one file must exist in the output directory.
+    let files: Vec<_> = std::fs::read_dir(&tmp)
+        .expect("read man output dir")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(
+        !files.is_empty(),
+        "man must produce at least one file in {tmp:?}"
+    );
+}
+
+/// `man` produces a file whose name starts with `oxiproto-cli`.
+#[test]
+fn man_produces_oxiproto_cli_man_file() {
+    let tmp = tmp_dir("man_name");
+
+    let status = Command::new(binary())
+        .args(["man", "--output", tmp.to_str().expect("utf8")])
+        .status()
+        .expect("spawn man");
+
+    assert!(status.success(), "man exited with {status}");
+
+    let has_main_page = std::fs::read_dir(&tmp)
+        .expect("read man output dir")
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name().to_string_lossy().starts_with("oxiproto-cli"));
+
+    assert!(
+        has_main_page,
+        "man must produce an 'oxiproto-cli*' file in {tmp:?}"
+    );
+}
+
+/// `man` with a non-existent parent directory still succeeds (creates dirs).
+#[test]
+fn man_creates_output_directory() {
+    let base = tmp_dir("man_mkdir");
+    let nested = base.join("a").join("b");
+
+    let status = Command::new(binary())
+        .args(["man", "--output", nested.to_str().expect("utf8")])
+        .status()
+        .expect("spawn man --output nested");
+
+    assert!(
+        status.success(),
+        "man --output <nested> exited with {status}"
+    );
+    assert!(nested.is_dir(), "man must create the output directory");
+}
+
+// ---------------------------------------------------------------------------
+// cargo-install smoke test
+//
+// `cargo install oxiproto-cli` produces a binary equivalent to the one under
+// test here.  We exercise every subcommand at least once to verify that a
+// freshly installed binary would work correctly end-to-end.
+// ---------------------------------------------------------------------------
+
+/// Write a fully lint-clean `.proto` fixture for the smoke test.
+/// All names follow Google style guide conventions used by the lint rules.
+fn write_smoke_proto(dir: &std::path::Path) -> PathBuf {
+    let proto = dir.join("smoke.proto");
+    std::fs::write(
+        &proto,
+        r#"syntax = "proto3";
+package smoke;
+
+message Greeting {
+    string name = 1;
+    int32 count = 2;
+}
+
+enum GreetingStatus {
+    GREETING_STATUS_UNKNOWN = 0;
+    GREETING_STATUS_ACTIVE = 1;
+    GREETING_STATUS_RETIRED = 2;
+}
+"#,
+    )
+    .expect("write smoke.proto");
+    proto
+}
+
+/// End-to-end smoke test that exercises every subcommand of the binary,
+/// verifying that the binary produced by `cargo build` (and, by extension,
+/// `cargo install`) behaves correctly.
+///
+/// Covers: gen, describe, encode, decode, format, lint, breaking, doc,
+///         completions, man subcommands, plus --help and --version-like flags.
+#[test]
+fn install_smoke_test_all_subcommands() {
+    let tmp = tmp_dir("install-smoke");
+    let proto_dir = tmp.join("protos");
+    std::fs::create_dir_all(&proto_dir).expect("create proto_dir");
+    // Use a lint-clean proto for the smoke test so lint passes.
+    let proto_file = write_smoke_proto(&proto_dir);
+    let proto_str = proto_file.to_str().expect("utf8");
+    let dir_str = proto_dir.to_str().expect("utf8");
+
+    // 1. --help exits zero
+    assert!(
+        Command::new(binary())
+            .arg("--help")
+            .status()
+            .expect("--help")
+            .success(),
+        "smoke: --help"
+    );
+
+    // 2. gen exits zero and produces output
+    let gen_out = tmp.join("gen_out");
+    assert!(
+        Command::new(binary())
+            .args([
+                "gen",
+                proto_str,
+                "-I",
+                dir_str,
+                "-o",
+                gen_out.to_str().expect("utf8")
+            ])
+            .status()
+            .expect("gen")
+            .success(),
+        "smoke: gen"
+    );
+    let rs_files: Vec<_> = std::fs::read_dir(&gen_out)
+        .expect("read gen_out")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "rs").unwrap_or(false))
+        .collect();
+    assert!(!rs_files.is_empty(), "smoke: gen must produce .rs files");
+
+    // 3. describe exits zero
+    assert!(
+        Command::new(binary())
+            .args(["describe", proto_str, "-I", dir_str])
+            .status()
+            .expect("describe")
+            .success(),
+        "smoke: describe"
+    );
+
+    // 4. encode exits zero and produces a non-empty binary file
+    let json_in = tmp.join("in.json");
+    std::fs::write(&json_in, r#"{"name":"smoke","count":1}"#).expect("write json");
+    let bin_out = tmp.join("encoded.bin");
+    assert!(
+        Command::new(binary())
+            .args([
+                "encode",
+                proto_str,
+                "-I",
+                dir_str,
+                "-t",
+                "smoke.Greeting",
+                "-i",
+                json_in.to_str().expect("utf8"),
+                "-o",
+                bin_out.to_str().expect("utf8"),
+            ])
+            .status()
+            .expect("encode")
+            .success(),
+        "smoke: encode"
+    );
+    assert!(bin_out.exists(), "smoke: encode must produce binary file");
+
+    // 5. decode round-trips correctly
+    let json_out = tmp.join("decoded.json");
+    assert!(
+        Command::new(binary())
+            .args([
+                "decode",
+                proto_str,
+                "-I",
+                dir_str,
+                "-t",
+                "smoke.Greeting",
+                "-i",
+                bin_out.to_str().expect("utf8"),
+                "-o",
+                json_out.to_str().expect("utf8"),
+            ])
+            .status()
+            .expect("decode")
+            .success(),
+        "smoke: decode"
+    );
+    let decoded = std::fs::read_to_string(&json_out).expect("read decoded json");
+    let v: serde_json::Value = serde_json::from_str(&decoded).expect("parse decoded json");
+    assert_eq!(v["name"], "smoke", "smoke: decode name field");
+
+    // 6. format exits zero
+    assert!(
+        Command::new(binary())
+            .args(["format", proto_str, "-I", dir_str])
+            .status()
+            .expect("format")
+            .success(),
+        "smoke: format"
+    );
+
+    // 7. lint exits zero on clean proto
+    assert!(
+        Command::new(binary())
+            .args(["lint", proto_str, "-I", dir_str])
+            .status()
+            .expect("lint")
+            .success(),
+        "smoke: lint"
+    );
+
+    // 8. breaking exits zero when old == new
+    assert!(
+        Command::new(binary())
+            .args([
+                "breaking",
+                "--old",
+                proto_str,
+                "--old-include",
+                dir_str,
+                "--new",
+                proto_str,
+                "--new-include",
+                dir_str,
+            ])
+            .status()
+            .expect("breaking")
+            .success(),
+        "smoke: breaking"
+    );
+
+    // 9. doc exits zero
+    assert!(
+        Command::new(binary())
+            .args(["doc", proto_str, "-I", dir_str])
+            .status()
+            .expect("doc")
+            .success(),
+        "smoke: doc"
+    );
+
+    // 10. completions bash exits zero
+    assert!(
+        Command::new(binary())
+            .args(["completions", "bash"])
+            .status()
+            .expect("completions bash")
+            .success(),
+        "smoke: completions bash"
+    );
+
+    // 11. man exits zero and produces files
+    let man_out = tmp.join("man");
+    assert!(
+        Command::new(binary())
+            .args(["man", "--output", man_out.to_str().expect("utf8")])
+            .status()
+            .expect("man")
+            .success(),
+        "smoke: man"
+    );
+    assert!(
+        std::fs::read_dir(&man_out)
+            .expect("read man_out")
+            .filter_map(|e| e.ok())
+            .any(|_| true),
+        "smoke: man must produce at least one file"
+    );
+}

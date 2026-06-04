@@ -24,7 +24,7 @@ pub mod loader;
 pub mod resolve;
 
 pub use ast::{
-    Enum, EnumValue, ExtendBlock, ExtensionRange, Field, FieldLabel, FieldType, Import,
+    Edition, Enum, EnumValue, ExtendBlock, ExtensionRange, Field, FieldLabel, FieldType, Import,
     ImportModifier, Message, Method, Oneof, OptionValue, ProtoFile, ProtoOption, Reserved,
     ReservedRange, ReservedRangeTo, ScalarType, Service,
 };

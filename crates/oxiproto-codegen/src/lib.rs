@@ -93,3 +93,41 @@ pub fn generate_to_file_with_options(
     let code = generate_with_options(fds, options)?;
     std::fs::write(path, code).map_err(CodegenError::Io)
 }
+
+/// Stream generated code into any [`std::io::Write`] sink.
+///
+/// This is the lowest-allocation path: it generates the Rust source and
+/// writes it directly to `writer` without building an intermediate `String`
+/// copy beyond the one produced by `generate_with_options`.
+///
+/// # Note on streaming
+///
+/// Internally the code generator builds a `String` via string concatenation.
+/// This function writes that single buffer to `writer` without an extra copy,
+/// making it preferable to `generate_with_options` when the caller is writing
+/// to a file, socket, or other I/O sink.
+///
+/// For an in-memory buffer prefer [`generate_with_options`] directly.
+///
+/// # Errors
+///
+/// Returns [`CodegenError`] on descriptor errors or on I/O failure.
+pub fn generate_to_writer<W: std::io::Write>(
+    fds: &prost_types::FileDescriptorSet,
+    options: &CodegenOptions,
+    writer: &mut W,
+) -> Result<(), CodegenError> {
+    let code = generate_with_options(fds, options)?;
+    writer.write_all(code.as_bytes()).map_err(CodegenError::Io)
+}
+
+/// Stream the default generated output into any [`std::io::Write`] sink.
+///
+/// Convenience wrapper around [`generate_to_writer`] using default
+/// [`CodegenOptions`].
+pub fn generate_to_writer_default<W: std::io::Write>(
+    fds: &prost_types::FileDescriptorSet,
+    writer: &mut W,
+) -> Result<(), CodegenError> {
+    generate_to_writer(fds, &CodegenOptions::default(), writer)
+}

@@ -93,6 +93,13 @@ pub enum ParseError {
     UnbalancedBraces { span: Span },
     /// The `syntax` statement contained an unrecognised value.
     UnknownSyntax(String),
+    /// The `edition` statement contained an unrecognised or unsupported value.
+    ///
+    /// Currently only `"2023"` is accepted; any other edition string triggers
+    /// this error.
+    UnsupportedEdition(String),
+    /// Both `syntax` and `edition` were specified in the same file.
+    SyntaxAndEditionConflict,
     /// A proto2 `group` field name does not start with an uppercase letter.
     MalformedGroupName { name: String, span: Span },
 }
@@ -125,6 +132,15 @@ impl std::fmt::Display for ParseError {
                     f,
                     "unknown syntax value: expected \"proto2\" or \"proto3\", found {:?}",
                     s
+                )
+            }
+            ParseError::UnsupportedEdition(s) => {
+                write!(f, "unsupported edition: expected \"2023\", found {:?}", s)
+            }
+            ParseError::SyntaxAndEditionConflict => {
+                write!(
+                    f,
+                    "a .proto file cannot specify both 'syntax' and 'edition'"
                 )
             }
             ParseError::MalformedGroupName { name, span } => {

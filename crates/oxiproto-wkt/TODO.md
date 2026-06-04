@@ -9,6 +9,8 @@ and `StructExt` for Struct/Value, `ListValueExt`, `FieldMaskExt`, `EmptyExt`,
 `SourceContextExt`, `TypeExt`, `EnumTypeExt`, `ApiExt`. `time` feature adds
 `TimestampTimeExt`/`DurationTimeExt`. Free functions `timestamp_cmp`/`duration_cmp`
 for ordering. RFC 3339 uses a pure-Rust calendar algorithm. ~900 SLOC production code.
+Criterion benchmarks in `benches/wkt.rs` cover Timestamp/Any/Struct performance.
+oxiproto-json now delegates all WKT formatting to oxiproto-wkt traits (2026-06-03).
 
 ## Core Implementation
 - [x] Implement `AnyExt` trait: pack(message) -> Any, unpack<T>(any) -> T, type_url validation
@@ -94,11 +96,19 @@ for ordering. RFC 3339 uses a pure-Rust calendar algorithm. ~900 SLOC production
 - [x] Test Duration string round-trip (whole, fractional, negative)
 
 ## Performance
-- [ ] Benchmark Timestamp conversion (SystemTime <-> Timestamp) throughput
-- [ ] Benchmark Any pack/unpack vs manual encode/decode
-- [ ] Profile allocation in Struct/Value conversion chains
+- [x] Benchmark Timestamp conversion (SystemTime <-> Timestamp) throughput
+  - Criterion harness in `benches/wkt.rs`: from_system_time, to_system_time, round-trip, RFC 3339 parse/format.
+- [x] Benchmark Any pack/unpack vs manual encode/decode
+  - Criterion harness in `benches/wkt.rs`: pack, unpack, round-trip, manual encode/decode comparison.
+- [x] Profile allocation in Struct/Value conversion chains
+  - Criterion harness in `benches/wkt.rs`: build_struct_10/100_fields, Value constructors, get/miss.
 
 ## Integration
-- [ ] Ensure oxiproto-json uses WKT extension traits for canonical JSON representation
+- [x] Ensure oxiproto-json uses WKT extension traits for canonical JSON representation
+  - oxiproto-json refactored (2026-06-03): `TimestampExt::to_rfc3339`/`from_rfc3339` and
+    `DurationExt::to_duration_string`/`from_duration_string` now used instead of inline chrono.
+    chrono dep removed from oxiproto-json; oxiproto-wkt added as dep instead.
 - [ ] Ensure oxirpc uses Timestamp/Duration for deadline/timeout metadata
+  - DEFERRED: oxirpc is a separate workspace (~/work/oxirpc); blocked on oxirpc integration work.
 - [ ] Coordinate with oxiproto-reflect for dynamic Any unpacking
+  - DEFERRED: Requires prost-reflect DynamicMessage integration; tracked in oxiproto-reflect roadmap.

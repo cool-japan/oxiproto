@@ -98,8 +98,8 @@ pub use native::{
     EnumValueDescriptor as NativeEnumValueDescriptor, FieldDescriptor as NativeFieldDescriptor,
     FileDescriptor as NativeFileDescriptor, Kind as NativeKind, MapKey as NativeMapKey,
     MessageDescriptor as NativeMessageDescriptor, MethodDescriptor as NativeMethodDescriptor,
-    OneofDescriptor as NativeOneofDescriptor, ServiceDescriptor as NativeServiceDescriptor,
-    Value as NativeValue,
+    NativeJsonError, NativeTextError, OneofDescriptor as NativeOneofDescriptor,
+    ServiceDescriptor as NativeServiceDescriptor, Value as NativeValue,
 };
 
 use prost::Message;

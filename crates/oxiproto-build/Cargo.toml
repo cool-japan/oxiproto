@@ -13,6 +13,9 @@ categories = ["development-tools"]
 [features]
 default = ["native-parser"]
 native-parser = ["dep:prost-reflect"]
+# Enable `Builder::native_impl()` which also generates `OxiMessage` / `OxiName`
+# implementations via `oxiproto-codegen`.
+native-codegen = ["dep:oxiproto-codegen"]
 
 [dependencies]
 prost.workspace = true
@@ -21,6 +24,19 @@ prost-types.workspace = true
 prost-reflect = { workspace = true, optional = true }
 protox.workspace = true
 oxiproto-core.workspace = true
+oxiproto-codegen = { workspace = true, optional = true }
 
 [dev-dependencies]
-# oxiproto-codegen.workspace = true  # temporarily removed for publish (forward dev-dep); restore after publish complete
+oxiproto-codegen = { path = "../oxiproto-codegen", version = "0.1.1" }
+proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "parse"
+harness = false
+required-features = ["native-parser"]
+
+[[bench]]
+name = "parse_bench"
+harness = false
+required-features = ["native-parser"]

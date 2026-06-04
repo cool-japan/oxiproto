@@ -59,7 +59,9 @@
 
 pub mod descriptor;
 pub mod dynamic;
+pub mod json;
 pub mod pool;
+pub mod text;
 pub mod value;
 pub mod wire_codec;
 
@@ -68,5 +70,7 @@ pub use descriptor::{
     MessageDescriptor, MethodDescriptor, OneofDescriptor, ServiceDescriptor,
 };
 pub use dynamic::DynamicMessage;
+pub use json::JsonError as NativeJsonError;
 pub use pool::{DescriptorPool, PoolInner};
+pub use text::TextError as NativeTextError;
 pub use value::{MapKey, Value};

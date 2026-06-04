@@ -23,7 +23,7 @@ serde = { workspace = true, optional = true, features = ["alloc"] }
 
 [dev-dependencies]
 prost = { workspace = true, features = ["derive"] }
-proptest = "1"
+proptest.workspace = true
 criterion = "0.8.2"
 serde_json = { workspace = true }
 

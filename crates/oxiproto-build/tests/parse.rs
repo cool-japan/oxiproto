@@ -1,8 +1,8 @@
 //! Integration tests for the full proto3 body parser (`parse_file`).
 
 use oxiproto_build::parser::{
-    parse_file, Field, FieldLabel, FieldType, ImportModifier, OptionValue, ParseError, Reserved,
-    ReservedRange, ReservedRangeTo, ScalarType,
+    parse_file, Edition, Field, FieldLabel, FieldType, ImportModifier, OptionValue, ParseError,
+    Reserved, ReservedRange, ReservedRangeTo, ScalarType,
 };
 
 // ---------------------------------------------------------------------------
@@ -884,4 +884,258 @@ message Person {
     let addr = &msg.nested_messages[0];
     assert_eq!(addr.name, "Address");
     assert_eq!(addr.fields.len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Edition 2023
+// ---------------------------------------------------------------------------
+
+/// A minimal `edition = "2023"` file parses successfully.
+#[test]
+fn test_edition_2023_basic() {
+    let src = r#"edition = "2023";
+package myedition;
+message Hello {
+  string name = 1;
+  int32  id   = 2;
+}
+"#;
+    let f = parse_file(src).expect("edition 2023 must parse");
+    assert_eq!(f.edition, Some(Edition::Edition2023));
+    assert_eq!(f.syntax, None);
+    assert_eq!(f.package, Some("myedition".to_owned()));
+    assert_eq!(f.messages.len(), 1);
+    let msg = &f.messages[0];
+    assert_eq!(msg.name, "Hello");
+    assert_eq!(msg.fields.len(), 2);
+}
+
+/// Edition 2023 supports `optional` keyword (explicit field presence).
+#[test]
+fn test_edition_2023_optional_field() {
+    let src = r#"edition = "2023";
+message Msg {
+  optional string name = 1;
+  int32 count = 2;
+}
+"#;
+    let f = parse_file(src).expect("must parse");
+    assert_eq!(f.edition, Some(Edition::Edition2023));
+    let msg = &f.messages[0];
+    assert_eq!(msg.fields.len(), 2);
+    assert_eq!(msg.fields[0].label, FieldLabel::Optional);
+    assert_eq!(msg.fields[1].label, FieldLabel::Singular);
+}
+
+/// Edition 2023 supports `repeated` fields.
+#[test]
+fn test_edition_2023_repeated_field() {
+    let src = r#"edition = "2023";
+message Collection {
+  repeated string items = 1;
+  repeated int64 ids = 2;
+}
+"#;
+    let f = parse_file(src).expect("must parse");
+    assert_eq!(f.edition, Some(Edition::Edition2023));
+    let msg = &f.messages[0];
+    assert_eq!(msg.fields.len(), 2);
+    assert_eq!(msg.fields[0].label, FieldLabel::Repeated);
+    assert_eq!(msg.fields[1].label, FieldLabel::Repeated);
+}
+
+/// Edition 2023 supports map fields.
+#[test]
+fn test_edition_2023_map_field() {
+    let src = r#"edition = "2023";
+message Config {
+  map<string, int32> settings = 1;
+  map<int64, string> labels   = 2;
+}
+"#;
+    let f = parse_file(src).expect("must parse");
+    assert_eq!(f.edition, Some(Edition::Edition2023));
+    let msg = &f.messages[0];
+    assert_eq!(msg.fields.len(), 2);
+    assert_eq!(
+        msg.fields[0].ty,
+        FieldType::Map {
+            key: ScalarType::String,
+            value: Box::new(FieldType::Scalar(ScalarType::Int32)),
+        }
+    );
+}
+
+/// Edition 2023 supports oneof blocks.
+#[test]
+fn test_edition_2023_oneof() {
+    let src = r#"edition = "2023";
+message Event {
+  oneof payload {
+    string text   = 1;
+    bytes  binary = 2;
+    int32  code   = 3;
+  }
+}
+"#;
+    let f = parse_file(src).expect("must parse");
+    let msg = &f.messages[0];
+    assert_eq!(msg.oneofs.len(), 1);
+    assert_eq!(msg.oneofs[0].name, "payload");
+    assert_eq!(msg.oneofs[0].fields.len(), 3);
+}
+
+/// Edition 2023 supports enums.
+#[test]
+fn test_edition_2023_enum() {
+    let src = r#"edition = "2023";
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  ACTIVE   = 1;
+  INACTIVE = 2;
+}
+message Thing {
+  Status status = 1;
+}
+"#;
+    let f = parse_file(src).expect("must parse");
+    assert_eq!(f.edition, Some(Edition::Edition2023));
+    assert_eq!(f.enums.len(), 1);
+    assert_eq!(f.enums[0].name, "Status");
+    assert_eq!(f.enums[0].values.len(), 3);
+}
+
+/// Edition 2023 supports services.
+#[test]
+fn test_edition_2023_service() {
+    let src = r#"edition = "2023";
+message Req {}
+message Resp {}
+service MyService {
+  rpc Call (Req) returns (Resp);
+  rpc Stream (Req) returns (stream Resp);
+}
+"#;
+    let f = parse_file(src).expect("must parse");
+    assert_eq!(f.services.len(), 1);
+    let svc = &f.services[0];
+    assert_eq!(svc.name, "MyService");
+    assert_eq!(svc.methods.len(), 2);
+    assert!(!svc.methods[0].server_streaming);
+    assert!(svc.methods[1].server_streaming);
+}
+
+/// Edition 2023 supports file-level options.
+#[test]
+fn test_edition_2023_file_option() {
+    let src = r#"edition = "2023";
+option java_package = "com.example";
+message Msg { int32 id = 1; }
+"#;
+    let f = parse_file(src).expect("must parse");
+    assert_eq!(f.edition, Some(Edition::Edition2023));
+    assert_eq!(f.options.len(), 1);
+    assert_eq!(f.options[0].name, "java_package");
+}
+
+/// Edition 2023 supports nested messages.
+#[test]
+fn test_edition_2023_nested_message() {
+    let src = r#"edition = "2023";
+message Outer {
+  message Inner {
+    int32 value = 1;
+  }
+  Inner inner = 1;
+  string name = 2;
+}
+"#;
+    let f = parse_file(src).expect("must parse");
+    let outer = &f.messages[0];
+    assert_eq!(outer.nested_messages.len(), 1);
+    assert_eq!(outer.nested_messages[0].name, "Inner");
+    assert_eq!(outer.fields.len(), 2);
+}
+
+/// Edition 2023 supports reserved ranges and names.
+#[test]
+fn test_edition_2023_reserved() {
+    let src = r#"edition = "2023";
+message Versioned {
+  reserved 2, 15, 9 to 11;
+  reserved "old_field", "another_old_field";
+  int32 id = 1;
+}
+"#;
+    let f = parse_file(src).expect("must parse");
+    let msg = &f.messages[0];
+    assert_eq!(msg.reserved.len(), 2);
+}
+
+/// Edition 2023 with imports is parsed correctly.
+#[test]
+fn test_edition_2023_imports() {
+    let src = r#"edition = "2023";
+import "google/protobuf/timestamp.proto";
+import public "other.proto";
+message Msg {
+  int32 id = 1;
+}
+"#;
+    let f = parse_file(src).expect("must parse");
+    assert_eq!(f.edition, Some(Edition::Edition2023));
+    assert_eq!(f.imports.len(), 2);
+    assert_eq!(f.imports[0].modifier, ImportModifier::None);
+    assert_eq!(f.imports[1].modifier, ImportModifier::Public);
+}
+
+/// An unsupported edition value (not "2023") produces `UnsupportedEdition` error.
+#[test]
+fn test_edition_unknown_value_error() {
+    let src = r#"edition = "2024";"#;
+    let err = parse_file(src).expect_err("must fail on unknown edition");
+    assert!(
+        matches!(err, ParseError::UnsupportedEdition(ref s) if s == "2024"),
+        "expected UnsupportedEdition(\"2024\"), got: {err:?}"
+    );
+}
+
+/// Setting both `syntax` and `edition` produces `SyntaxAndEditionConflict` error.
+#[test]
+fn test_syntax_and_edition_conflict() {
+    let src = r#"syntax = "proto3";
+edition = "2023";
+message Msg { int32 id = 1; }
+"#;
+    let err = parse_file(src).expect_err("must fail on syntax+edition conflict");
+    assert!(
+        matches!(err, ParseError::SyntaxAndEditionConflict),
+        "expected SyntaxAndEditionConflict, got: {err:?}"
+    );
+}
+
+/// Setting edition before syntax also produces `SyntaxAndEditionConflict`.
+#[test]
+fn test_edition_then_syntax_conflict() {
+    let src = r#"edition = "2023";
+syntax = "proto3";
+message Msg { int32 id = 1; }
+"#;
+    let err = parse_file(src).expect_err("must fail on edition+syntax conflict");
+    assert!(
+        matches!(err, ParseError::SyntaxAndEditionConflict),
+        "expected SyntaxAndEditionConflict, got: {err:?}"
+    );
+}
+
+/// Edition 2023 produces correct `file_syntax_string` value of "editions".
+#[test]
+fn test_edition_2023_edition_field_is_set() {
+    let src = r#"edition = "2023";
+message Empty {}
+"#;
+    let f = parse_file(src).expect("must parse");
+    assert_eq!(f.edition, Some(Edition::Edition2023));
+    // The `Edition::syntax_sentinel()` should be "editions"
+    assert_eq!(Edition::syntax_sentinel(), "editions");
 }

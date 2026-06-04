@@ -86,10 +86,39 @@ module to fully replace `prost`.
   - **Design:** `benches/message.rs` — hand-written benchmark message (scalars+repeated+string) implementing OxiMessage + a `#[derive(prost::Message)]` equivalent; benchmark `encode_to_vec` + `decode` both ways; assert byte-equal payloads once before timing.
   - **Files:** `crates/oxiproto-core/benches/message.rs` (new ~160 SLOC), `Cargo.toml` (same criterion dev-dep)
   - **Tests:** Covered by `cargo bench --no-run` gate.
-- [ ] Profile allocation patterns in decode path
-- [ ] Consider arena allocation for repeated message fields
+- [x] Profile allocation patterns in decode path (done 2026-06-03)
+  - **Goal:** Track allocation count + bytes for string/bytes/repeated fields during decode without touching the global allocator.
+  - **Design:** `src/wire/alloc_profile.rs` — `DecodeStats` counter struct, `ProfiledDecodeBuffer<'buf,'stats>` wrapper, `AllocReport` (derived metrics: avg_bytes_per_alloc, heap_fraction_pct), `AllocBudget` guard, `EncodeAllocProfile` trait. Wire-codec round-trip for `AllocReport` (field 1–9 varint encoding). 20 tests.
+  - **Files:** `src/wire/alloc_profile.rs` (new, ~540 SLOC); `src/wire/mod.rs` (added `pub mod alloc_profile`); `src/lib.rs` (no change — accessed via `wire::alloc_profile`).
+- [x] Consider arena allocation for repeated message fields (done 2026-06-03)
+  - **Goal:** Reduce per-entry heap allocation for `repeated bytes` / `repeated string` / `repeated message` fields in hot decode paths.
+  - **Design:** `src/arena.rs` — `ArenaVec<T>` (slab-sized pre-allocation, avoids 2× doubling), `StringPool` (intern/dedup for repeated string fields, O(unique) memory), `BytesArena` (contiguous slab + handle table for repeated bytes fields, O(1) retrieval), `ArenaDecoder<T>` (combined element + bytes store for generated code). All pure Rust, no_std+alloc compatible. 36 tests.
+  - **Files:** `src/arena.rs` (new, ~570 SLOC); `src/lib.rs` (added `pub mod arena`).
 
 ## Integration
-- [ ] Ensure oxiproto-build generates code that uses native Message trait instead of prost::Message
-- [ ] Ensure oxiproto-reflect can work with both prost-backed and native messages
-- [ ] Ensure wire format compatibility with canonical protobuf implementations (Go, C++, Java)
+- [x] Ensure oxiproto-build generates code that uses native Message trait instead of prost::Message
+  - **Done:** Added `native_impl()` builder method and `native-codegen` feature to `oxiproto-build`.
+    When enabled, `Builder::native_impl(true)` calls `oxiproto_codegen::generate_with_options` with
+    `emit_oxi_message_impl = true` and writes per-package `*_oxi.rs` files containing `OxiMessage`
+    + `OxiName` impls alongside the prost-generated `.rs` files.
+  - **Files:** `crates/oxiproto-build/Cargo.toml` (native-codegen feature + optional dep),
+    `crates/oxiproto-build/src/builder.rs` (new `native_impl` field + methods + compile step).
+- [x] Ensure oxiproto-reflect can work with both prost-backed and native messages
+  - **Done:** Added `src/reflect_bridge.rs` to `oxiproto-core` with three components:
+    1. `OxiReflect` blanket trait (auto-implemented for all `OxiMessage + OxiName` types):
+       `reflect_handle()` → `OxiReflectHandle` (type-erased wire bytes + full proto name / type URL).
+    2. `decode_handle<T>()` free function: decode an `OxiReflectHandle` back to a concrete `T`.
+    3. `MessageRegistry`: a lightweight BTreeMap-backed registry of `OxiMessage` types with
+       `register<T>()`, `validate_by_name()`, `encode_by_name()`, `metadata()`, `names()`.
+    4. `ReflectMetadata`: static type info without an instance (`name`, `package`, `full_name`, `type_url`).
+  - **Tests:** `tests/reflect_bridge_tests.rs` — 35 tests covering all structs and methods.
+  - **Files:** `src/reflect_bridge.rs` (new, ~340 SLOC); `src/lib.rs` (`pub mod reflect_bridge`).
+- [x] Ensure wire format compatibility with canonical protobuf implementations (Go, C++, Java)
+  - **Done:** Added `tests/wire_compat.rs` with 57 golden-byte tests derived from the canonical
+    protobuf binary encoding specification (protobuf.dev/programming-guides/encoding/):
+    varint (0, 1, 127, 128, 150, 300, u64::MAX), zigzag (all spec examples, i32::MIN/MAX),
+    field tags (all 5 wire types, multi-byte tags), fixed32/64 little-endian, sfixed32/64,
+    float/double IEEE 754, length-delimited (empty, 128-byte payload), complete message examples
+    (Test1/Test2/Test3/Test4 from the encoding guide), unknown-field skip, and cross-validation
+    against prost (native→prost and prost→native round-trips).
+  - **Files:** `tests/wire_compat.rs` (new, 57 tests, 350 SLOC).

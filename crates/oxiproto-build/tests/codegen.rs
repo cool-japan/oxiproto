@@ -283,3 +283,198 @@ fn build_error_from_oxiproto_codegen_error_is_codegen_variant() {
         other => panic!("expected BuildError::Codegen, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// native-codegen: OxiMessage / OxiName overlay (TODO item 167)
+// ---------------------------------------------------------------------------
+
+/// When `native-codegen` is enabled and `Builder::native_impl(true)` is set,
+/// the builder emits `*_oxi.rs` files containing `impl OxiMessage for T` and
+/// `impl OxiName for T` blocks alongside the prost-generated `.rs` files.
+///
+/// This test verifies the native-codegen overlay produces the correct
+/// artefacts.  Full exclusive replacement of `prost::Message` with
+/// `OxiMessage` is DEFERRED pending a native message codegen engine.
+#[cfg(feature = "native-codegen")]
+#[test]
+fn native_codegen_overlay_generates_oxi_impl_files() {
+    let tmp = tmp_root().join("native_codegen_oxi");
+    fs::create_dir_all(&tmp).unwrap();
+    let proto_dir = tmp.join("proto");
+    fs::create_dir_all(&proto_dir).unwrap();
+
+    let proto_content = r#"syntax = "proto3";
+package oxi_test;
+message Person {
+    string name = 1;
+    int32 age = 2;
+}
+"#;
+    fs::write(proto_dir.join("person.proto"), proto_content).unwrap();
+
+    let out_dir = tmp.join("out");
+    fs::create_dir_all(&out_dir).unwrap();
+
+    oxiproto_build::Builder::new()
+        .out_dir(&out_dir)
+        .native_impl(true)
+        .compile(
+            &[proto_dir.join("person.proto")],
+            std::slice::from_ref(&proto_dir),
+        )
+        .expect("native_impl compile failed");
+
+    // Expect both a prost-generated .rs and a native_impl *_oxi.rs file.
+    let rs_files: Vec<_> = fs::read_dir(&out_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "rs").unwrap_or(false))
+        .collect();
+
+    assert!(
+        !rs_files.is_empty(),
+        "no .rs files generated in out_dir {out_dir:?}"
+    );
+
+    // Find the *_oxi.rs file.
+    let oxi_file = rs_files.iter().find(|e| {
+        e.path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.ends_with("_oxi.rs"))
+            .unwrap_or(false)
+    });
+
+    assert!(
+        oxi_file.is_some(),
+        "expected an *_oxi.rs file from native-codegen; files: {:?}",
+        rs_files.iter().map(|e| e.path()).collect::<Vec<_>>()
+    );
+
+    let oxi_content = fs::read_to_string(oxi_file.unwrap().path()).unwrap();
+    assert!(
+        oxi_content.contains("OxiMessage") || oxi_content.contains("OxiName"),
+        "oxi file should contain OxiMessage or OxiName impl:\n{oxi_content}"
+    );
+}
+
+/// Without `native_impl`, no *_oxi.rs overlay files are emitted.
+#[test]
+fn no_native_codegen_by_default() {
+    let tmp = tmp_root().join("native_codegen_absent");
+    fs::create_dir_all(&tmp).unwrap();
+    let proto_dir = tmp.join("proto");
+    fs::create_dir_all(&proto_dir).unwrap();
+
+    fs::write(
+        proto_dir.join("simple2.proto"),
+        "syntax = \"proto3\";\npackage default_test;\nmessage Simple2 { int32 id = 1; }",
+    )
+    .unwrap();
+
+    let out_dir = tmp.join("out");
+    fs::create_dir_all(&out_dir).unwrap();
+
+    // native_impl defaults to false — no *_oxi.rs should appear.
+    oxiproto_build::Builder::new()
+        .out_dir(&out_dir)
+        .compile(
+            &[proto_dir.join("simple2.proto")],
+            std::slice::from_ref(&proto_dir),
+        )
+        .expect("compile without native_impl");
+
+    let oxi_files: Vec<_> = fs::read_dir(&out_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.ends_with("_oxi.rs"))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    assert!(
+        oxi_files.is_empty(),
+        "unexpected *_oxi.rs files when native_impl is false: {:?}",
+        oxi_files.iter().map(|e| e.path()).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Item 168: oxirpc-build delegation to oxiproto-build (integration probe)
+// ---------------------------------------------------------------------------
+
+/// Verify that `oxiproto_build::compile_to_fds` correctly parses and resolves
+/// proto files — this is the exact API that oxirpc-build delegates to.
+///
+/// This test mirrors the delegation contract from `oxirpc-build/src/lib.rs`
+/// where `compile_to_fds` is called with the same signature.
+#[test]
+fn compile_to_fds_delegation_contract() {
+    let tmp = tmp_root().join("delegation_contract");
+    fs::create_dir_all(&tmp).unwrap();
+    let proto_dir = tmp.join("proto");
+    fs::create_dir_all(&proto_dir).unwrap();
+
+    let proto_content = r#"syntax = "proto3";
+package delegation.test;
+
+message Request {
+    string query = 1;
+    int32 limit = 2;
+}
+
+message Response {
+    repeated string results = 1;
+}
+
+service SearchService {
+    rpc Search(Request) returns (Response);
+}
+"#;
+    fs::write(proto_dir.join("search.proto"), proto_content).unwrap();
+
+    // Call compile_to_fds — the exact delegation path used by oxirpc-build.
+    let fds = oxiproto_build::compile_to_fds(
+        &[proto_dir.join("search.proto")],
+        std::slice::from_ref(&proto_dir),
+    )
+    .expect("compile_to_fds delegation must succeed");
+
+    assert_eq!(fds.file.len(), 1, "expected exactly one file in FDS");
+    let file = &fds.file[0];
+    assert_eq!(file.package(), "delegation.test");
+    assert_eq!(file.message_type.len(), 2, "expected 2 messages");
+    assert_eq!(file.service.len(), 1, "expected 1 service");
+    assert_eq!(file.service[0].name(), "SearchService");
+    assert_eq!(file.service[0].method.len(), 1);
+    assert_eq!(file.service[0].method[0].name(), "Search");
+}
+
+/// Error path: `compile_to_fds` returns an error for malformed proto.
+#[test]
+fn compile_to_fds_delegation_error_path() {
+    let tmp = tmp_root().join("delegation_error");
+    fs::create_dir_all(&tmp).unwrap();
+    let proto_dir = tmp.join("proto");
+    fs::create_dir_all(&proto_dir).unwrap();
+
+    // Deliberately malformed proto (missing semicolon after field number).
+    fs::write(
+        proto_dir.join("bad.proto"),
+        "syntax = \"proto3\";\nmessage Bad { int32 x = }",
+    )
+    .unwrap();
+
+    let result = oxiproto_build::compile_to_fds(
+        &[proto_dir.join("bad.proto")],
+        std::slice::from_ref(&proto_dir),
+    );
+    assert!(
+        result.is_err(),
+        "compile_to_fds should return Err for malformed proto"
+    );
+}

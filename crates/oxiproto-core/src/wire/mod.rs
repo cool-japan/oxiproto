@@ -17,6 +17,7 @@ mod wire_type;
 
 /// Sub-modules exposed publicly so users can access lower-level helpers
 /// (e.g. `wire::varint::encoded_len_varint`).
+pub mod alloc_profile;
 pub mod fixed;
 pub mod length_delimited;
 pub mod tag;

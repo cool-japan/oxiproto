@@ -219,6 +219,17 @@ pub(crate) struct FileData {
     pub package: String,
     pub syntax: String,
     pub dependencies: Vec<String>,
+    /// `java_package` file option, if set.
+    pub java_package: Option<String>,
+    /// `go_package` file option, if set.
+    pub go_package: Option<String>,
+    /// `java_outer_classname` file option, if set.
+    pub java_outer_classname: Option<String>,
+    /// Whether the `deprecated` file option is set.
+    pub deprecated: bool,
+    /// Whether the `optimize_for` option is set to `CODE_SIZE` (2) or
+    /// `LITE_RUNTIME` (3). Stored as the raw integer from the proto enum.
+    pub optimize_for: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +322,32 @@ impl FileDescriptor {
             .dependencies
             .iter()
             .map(String::as_str)
+    }
+
+    /// The `java_package` file option, if set.
+    pub fn java_package(&self) -> Option<&str> {
+        self.pool.files[self.index].java_package.as_deref()
+    }
+
+    /// The `go_package` file option, if set.
+    pub fn go_package(&self) -> Option<&str> {
+        self.pool.files[self.index].go_package.as_deref()
+    }
+
+    /// The `java_outer_classname` file option, if set.
+    pub fn java_outer_classname(&self) -> Option<&str> {
+        self.pool.files[self.index].java_outer_classname.as_deref()
+    }
+
+    /// Returns `true` if the `deprecated` file option is set to `true`.
+    pub fn is_deprecated(&self) -> bool {
+        self.pool.files[self.index].deprecated
+    }
+
+    /// The raw `optimize_for` option value (0 = SPEED, 2 = CODE_SIZE, 3 =
+    /// LITE_RUNTIME; 0 is the default when unset).
+    pub fn optimize_for(&self) -> i32 {
+        self.pool.files[self.index].optimize_for
     }
 }
 

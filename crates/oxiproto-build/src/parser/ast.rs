@@ -11,11 +11,47 @@ use crate::parser::span::Span;
 // File-level container
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Protobuf Edition
+// ---------------------------------------------------------------------------
+
+/// A Protobuf Edition identifier.
+///
+/// Editions replace the `syntax` statement starting from Edition 2023.
+/// The descriptor builder treats Edition 2023 as proto3-like semantics
+/// (implicit field presence, no required fields) with additional opt-in
+/// feature flags via field options.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Edition {
+    /// `edition = "2023"` — the first generally-available Protobuf Edition.
+    Edition2023,
+    /// An unrecognised edition string, stored verbatim for forward compatibility.
+    Unknown(String),
+}
+
+impl Edition {
+    /// Construct an [`Edition`] from the string literal that followed `=`.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "2023" => Edition::Edition2023,
+            other => Edition::Unknown(other.to_owned()),
+        }
+    }
+
+    /// Return the canonical edition string as it appears in `FileDescriptorProto.syntax`
+    /// ("editions" is the sentinel value used by protoc for edition-based files).
+    pub fn syntax_sentinel() -> &'static str {
+        "editions"
+    }
+}
+
 /// The top-level container for a parsed `.proto` file.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ProtoFile {
     /// Value of the `syntax` statement, e.g. `"proto3"`.
     pub syntax: Option<String>,
+    /// Parsed edition from `edition = "2023";` (mutually exclusive with `syntax`).
+    pub edition: Option<Edition>,
     /// Value of the `package` statement, e.g. `"google.protobuf"`.
     pub package: Option<String>,
     /// All `import` statements, in declaration order.

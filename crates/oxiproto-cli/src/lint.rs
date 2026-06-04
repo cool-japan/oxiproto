@@ -266,11 +266,12 @@ fn print_json(violations: &[LintViolation]) {
             })
         })
         .collect();
-    // Use to_string for compact single-line output; pretty is not required.
-    println!(
-        "{}",
-        serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
-    );
+    // serde_json serialisation of a Vec<Value> is infallible; use match to
+    // avoid unwrap/expect in production code.
+    match serde_json::to_string(&arr) {
+        Ok(s) => println!("{s}"),
+        Err(_) => println!("[]"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,15 +281,12 @@ fn print_json(violations: &[LintViolation]) {
 /// `UpperCamelCase`: first char uppercase ASCII alpha, no underscores, all
 /// alphanumeric ASCII (digits allowed after the first char).
 pub fn is_upper_camel_case(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
     let mut chars = s.chars();
-    let first = chars.next().expect("non-empty checked above");
-    if !first.is_ascii_uppercase() {
-        return false;
+    match chars.next() {
+        None => false,
+        Some(first) if !first.is_ascii_uppercase() => false,
+        Some(_) => chars.all(|c| c.is_ascii_alphanumeric()),
     }
-    chars.all(|c| c.is_ascii_alphanumeric())
 }
 
 /// `lower_snake_case`: all lowercase ASCII, digits, and underscores; no

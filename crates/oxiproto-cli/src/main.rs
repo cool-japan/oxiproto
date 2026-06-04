@@ -49,6 +49,12 @@ enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Generate man page(s) for oxiproto-cli to the given directory.
+    Man {
+        /// Directory to write man page(s) into (default: current directory).
+        #[arg(long, short, default_value = ".")]
+        output: std::path::PathBuf,
+    },
 }
 
 fn main() {
@@ -72,6 +78,7 @@ fn main() {
             clap_complete::generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
         }
+        Command::Man { output } => man::run(output, verbosity),
     };
     if let Err(e) = result {
         verbosity.error(&e.to_string());
@@ -86,4 +93,5 @@ mod doc;
 mod format;
 mod gen;
 mod lint;
+mod man;
 mod util;

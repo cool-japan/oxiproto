@@ -7,9 +7,9 @@
 
 use crate::parser::{
     ast::{
-        Enum, EnumValue, ExtendBlock, ExtensionRange, Field, FieldLabel, FieldType, Import,
-        ImportModifier, Message, Method, Oneof, OptionValue, ProtoFile, ProtoOption, Reserved,
-        ReservedRange, ReservedRangeTo, ScalarType, Service,
+        Edition, Enum, EnumValue, ExtendBlock, ExtensionRange, Field, FieldLabel, FieldType,
+        Import, ImportModifier, Message, Method, Oneof, OptionValue, ProtoFile, ProtoOption,
+        Reserved, ReservedRange, ReservedRangeTo, ScalarType, Service,
     },
     error::ParseError,
     lexer::Lexer,
@@ -46,7 +46,16 @@ pub fn parse_file(source: &str) -> Result<ProtoFile, ParseError> {
         match spanned.value {
             Token::Eof => break,
             Token::Syntax => {
+                if file.edition.is_some() {
+                    return Err(ParseError::SyntaxAndEditionConflict);
+                }
                 file.syntax = Some(parse_syntax(&mut lexer)?);
+            }
+            Token::Edition => {
+                if file.syntax.is_some() {
+                    return Err(ParseError::SyntaxAndEditionConflict);
+                }
+                file.edition = Some(parse_edition_statement(&mut lexer)?);
             }
             Token::Package => {
                 file.package = Some(parse_package(&mut lexer)?);
@@ -70,7 +79,7 @@ pub fn parse_file(source: &str) -> Result<ProtoFile, ParseError> {
             Token::Extend => {
                 file.extends.push(parse_extend_block(&mut lexer)?);
             }
-            // Skip anything else at the top level (edition, etc.)
+            // Skip anything else at the top level
             _ => {}
         }
     }
@@ -404,6 +413,33 @@ fn parse_syntax(lexer: &mut PeekLexer<'_>) -> Result<String, ParseError> {
     }
     expect_semi(lexer)?;
     Ok(val)
+}
+
+/// Parse `= "2023" ;` after the `edition` keyword and return the [`Edition`] value.
+///
+/// Only `"2023"` is accepted; any other edition string triggers
+/// [`ParseError::UnsupportedEdition`].
+fn parse_edition_statement(lexer: &mut PeekLexer<'_>) -> Result<Edition, ParseError> {
+    expect_equals(lexer)?;
+    let s = expect_token(lexer, "edition string literal", |t| {
+        matches!(t, Token::StringLit(_))
+    })?;
+    let val = match s.value {
+        Token::StringLit(v) => v,
+        other => {
+            return Err(ParseError::UnexpectedToken {
+                expected: "edition string literal".to_owned(),
+                found: other.to_string(),
+                span: s.span,
+            });
+        }
+    };
+    let edition = Edition::parse(&val);
+    if matches!(edition, Edition::Unknown(_)) {
+        return Err(ParseError::UnsupportedEdition(val));
+    }
+    expect_semi(lexer)?;
+    Ok(edition)
 }
 
 /// Parse a dotted package name and `;` after the `package` keyword.

@@ -1549,4 +1549,197 @@ message M {
             "lowercase group name 'result' should produce a parse error"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Edition 2023 descriptor tests
+    // -----------------------------------------------------------------------
+
+    /// Edition 2023 file should produce `syntax = "editions"` in the FDP.
+    #[test]
+    fn edition_2023_syntax_sentinel_in_fdp() {
+        let src = r#"edition = "2023";
+package ed2023;
+message Hello {
+  string name = 1;
+  int32  id   = 2;
+}
+"#;
+        let fds = compile_str_native(src).expect("edition 2023 must compile");
+        assert_eq!(fds.file.len(), 1);
+        let fdp = &fds.file[0];
+        assert_eq!(
+            fdp.syntax.as_deref(),
+            Some("editions"),
+            "Edition 2023 must produce syntax = 'editions' sentinel"
+        );
+        assert_eq!(fdp.package.as_deref(), Some("ed2023"));
+        assert_eq!(fdp.message_type.len(), 1);
+        assert_eq!(fdp.message_type[0].name.as_deref(), Some("Hello"));
+    }
+
+    /// Edition 2023 `optional` field gets a synthetic oneof (same as proto3 optional).
+    #[test]
+    fn edition_2023_optional_gets_synthetic_oneof() {
+        let src = r#"edition = "2023";
+message Msg {
+  optional string name = 1;
+  int32 id = 2;
+}
+"#;
+        let fds = compile_str_native(src).expect("must compile");
+        let msg = &fds.file[0].message_type[0];
+        // `optional` in edition 2023 → synthetic oneof + proto3_optional=true
+        let opt_field = msg
+            .field
+            .iter()
+            .find(|f| f.name.as_deref() == Some("name"))
+            .expect("name field");
+        assert_eq!(
+            opt_field.proto3_optional,
+            Some(true),
+            "Edition 2023 optional field must have proto3_optional = true"
+        );
+        assert!(
+            opt_field.oneof_index.is_some(),
+            "Edition 2023 optional field must be in a synthetic oneof"
+        );
+        // The synthetic oneof must exist
+        assert!(
+            !msg.oneof_decl.is_empty(),
+            "synthetic oneof must be added for optional field"
+        );
+    }
+
+    /// Edition 2023 singular (unlabeled) field has no synthetic oneof.
+    #[test]
+    fn edition_2023_singular_no_synthetic_oneof() {
+        let src = r#"edition = "2023";
+message Msg {
+  int32 count = 1;
+  string name = 2;
+}
+"#;
+        let fds = compile_str_native(src).expect("must compile");
+        let msg = &fds.file[0].message_type[0];
+        for f in &msg.field {
+            assert!(
+                f.proto3_optional.is_none() || f.proto3_optional == Some(false),
+                "singular field {:?} must not have proto3_optional=true",
+                f.name
+            );
+            assert!(
+                f.oneof_index.is_none(),
+                "singular field {:?} must not be in a oneof",
+                f.name
+            );
+        }
+        assert!(
+            msg.oneof_decl.is_empty(),
+            "no synthetic oneofs for singular fields"
+        );
+    }
+
+    /// Edition 2023 map fields desugar to `XxxEntry` nested messages (same as proto3).
+    #[test]
+    fn edition_2023_map_field_desugaring() {
+        let src = r#"edition = "2023";
+package edmap;
+message Config {
+  map<string, int32> settings = 1;
+}
+"#;
+        let fds = compile_str_native(src).expect("must compile");
+        let msg = &fds.file[0].message_type[0];
+        // The map field itself should be repeated
+        let map_field = msg
+            .field
+            .iter()
+            .find(|f| f.name.as_deref() == Some("settings"))
+            .expect("settings field");
+        assert_eq!(
+            map_field.label,
+            Some(prost_types::field_descriptor_proto::Label::Repeated as i32),
+            "map field must be LABEL_REPEATED"
+        );
+        assert_eq!(
+            map_field.type_name.as_deref(),
+            Some(".edmap.Config.SettingsEntry"),
+            "map field type_name = XxxEntry FQN"
+        );
+        // A nested XxxEntry message must exist with map_entry=true
+        let entry_msg = msg
+            .nested_type
+            .iter()
+            .find(|m| m.name.as_deref() == Some("SettingsEntry"))
+            .expect("SettingsEntry nested message");
+        let map_entry = entry_msg
+            .options
+            .as_ref()
+            .and_then(|o| o.map_entry)
+            .unwrap_or(false);
+        assert!(map_entry, "SettingsEntry must have map_entry = true");
+    }
+
+    /// Edition 2023 repeated fields are correctly labelled.
+    #[test]
+    fn edition_2023_repeated_field_label() {
+        let src = r#"edition = "2023";
+message List {
+  repeated string tags = 1;
+  repeated int64 ids = 2;
+}
+"#;
+        let fds = compile_str_native(src).expect("must compile");
+        let msg = &fds.file[0].message_type[0];
+        for f in &msg.field {
+            assert_eq!(
+                f.label,
+                Some(prost_types::field_descriptor_proto::Label::Repeated as i32),
+                "field {:?} must be LABEL_REPEATED",
+                f.name
+            );
+        }
+    }
+
+    /// Edition 2023 services are emitted correctly.
+    #[test]
+    fn edition_2023_service_descriptor() {
+        let src = r#"edition = "2023";
+message Req { int32 id = 1; }
+message Resp { string result = 1; }
+service Greeter {
+  rpc SayHello (Req) returns (Resp);
+  rpc Subscribe (Req) returns (stream Resp);
+}
+"#;
+        let fds = compile_str_native(src).expect("must compile");
+        let fdp = &fds.file[0];
+        assert_eq!(fdp.service.len(), 1);
+        let svc = &fdp.service[0];
+        assert_eq!(svc.name.as_deref(), Some("Greeter"));
+        assert_eq!(svc.method.len(), 2);
+        assert!(!svc.method[0].server_streaming.unwrap_or(false));
+        assert!(svc.method[1].server_streaming.unwrap_or(false));
+    }
+
+    /// Edition 2023 nested messages are correctly represented.
+    #[test]
+    fn edition_2023_nested_message_descriptor() {
+        let src = r#"edition = "2023";
+package ednest;
+message Outer {
+  message Inner {
+    int32 value = 1;
+  }
+  Inner inner = 1;
+  repeated Inner items = 2;
+}
+"#;
+        let fds = compile_str_native(src).expect("must compile");
+        let outer = &fds.file[0].message_type[0];
+        assert_eq!(outer.name.as_deref(), Some("Outer"));
+        assert_eq!(outer.nested_type.len(), 1);
+        assert_eq!(outer.nested_type[0].name.as_deref(), Some("Inner"));
+        assert_eq!(outer.field.len(), 2);
+    }
 }

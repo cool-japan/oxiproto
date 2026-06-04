@@ -177,11 +177,28 @@ impl Builder {
         for file in &fds.file {
             let package = file.package.clone().unwrap_or_default();
             let file_index = self.files.len();
+            let (java_pkg, go_pkg, java_outer, deprecated, optimize_for) =
+                if let Some(opts) = &file.options {
+                    (
+                        opts.java_package.clone(),
+                        opts.go_package.clone(),
+                        opts.java_outer_classname.clone(),
+                        opts.deprecated.unwrap_or(false),
+                        opts.optimize_for.unwrap_or(0),
+                    )
+                } else {
+                    (None, None, None, false, 0)
+                };
             self.files.push(FileData {
                 name: file.name.clone().unwrap_or_default(),
                 package: package.clone(),
                 syntax: file.syntax.clone().unwrap_or_else(|| "proto2".to_owned()),
                 dependencies: file.dependency.clone(),
+                java_package: java_pkg,
+                go_package: go_pkg,
+                java_outer_classname: java_outer,
+                deprecated,
+                optimize_for,
             });
 
             for msg in &file.message_type {

@@ -16,7 +16,7 @@ use prost_types::{
 };
 
 use crate::parser::ast::{
-    Enum, EnumValue, ExtendBlock, Field, FieldLabel, FieldType, ImportModifier, Message,
+    Edition, Enum, EnumValue, ExtendBlock, Field, FieldLabel, FieldType, ImportModifier, Message,
     OptionValue, ProtoFile, ProtoOption, Reserved, ReservedRangeTo, ScalarType, Service,
 };
 
@@ -667,6 +667,37 @@ pub fn build_file_descriptor_set(
 }
 
 // ---------------------------------------------------------------------------
+// Edition / syntax helpers
+// ---------------------------------------------------------------------------
+
+/// Determine whether `proto_file` uses proto2 field-presence semantics.
+///
+/// Returns `true` only for `syntax = "proto2"`.  Edition 2023 and proto3 both
+/// return `false`; they share the same synthetic-oneof / LABEL_OPTIONAL rules.
+fn file_is_proto2(proto_file: &ProtoFile) -> bool {
+    proto_file.syntax.as_deref() == Some("proto2")
+}
+
+/// Return the value for `FileDescriptorProto::syntax` that matches this file.
+///
+/// - `"proto2"` / `"proto3"` → the literal string is forwarded verbatim.
+/// - Edition 2023 → `Some("editions")`, the sentinel required by the
+///   `FileDescriptorProto` wire format for edition-based files.
+/// - No syntax/edition (implicit proto3) → `None`.
+fn file_syntax_string(proto_file: &ProtoFile) -> Option<String> {
+    if let Some(ref syn) = proto_file.syntax {
+        return Some(syn.clone());
+    }
+    if let Some(ref ed) = proto_file.edition {
+        match ed {
+            Edition::Edition2023 => return Some(Edition::syntax_sentinel().to_owned()),
+            Edition::Unknown(s) => return Some(format!("editions/{s}")),
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // File-level builder
 // ---------------------------------------------------------------------------
 
@@ -676,7 +707,7 @@ fn build_file_descriptor_proto(
     src: &str,
 ) -> FileDescriptorProto {
     let pkg = proto_file.package.as_deref().unwrap_or("");
-    let is_proto2 = proto_file.syntax.as_deref() == Some("proto2");
+    let is_proto2 = file_is_proto2(proto_file);
 
     // Build enum FQN set for type-kind disambiguation.
     let mut enum_fqns: HashSet<String> = HashSet::new();
@@ -764,7 +795,7 @@ fn build_file_descriptor_proto(
         extension,
         options: build_file_options(&proto_file.options),
         source_code_info,
-        syntax: proto_file.syntax.clone(),
+        syntax: file_syntax_string(proto_file),
     }
 }
 
@@ -1601,7 +1632,7 @@ pub(crate) fn build_file_descriptor_proto_with_global_enums(
     src: &str,
 ) -> FileDescriptorProto {
     let pkg = proto_file.package.as_deref().unwrap_or("");
-    let is_proto2 = proto_file.syntax.as_deref() == Some("proto2");
+    let is_proto2 = file_is_proto2(proto_file);
 
     // Build top-level messages.
     let message_type: Vec<DescriptorProto> = proto_file
@@ -1671,7 +1702,7 @@ pub(crate) fn build_file_descriptor_proto_with_global_enums(
         extension,
         options: build_file_options(&proto_file.options),
         source_code_info,
-        syntax: proto_file.syntax.clone(),
+        syntax: file_syntax_string(proto_file),
     }
 }
 
