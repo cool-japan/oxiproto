@@ -27,7 +27,7 @@ oxiproto-core.workspace = true
 oxiproto-codegen = { workspace = true, optional = true }
 
 [dev-dependencies]
-oxiproto-codegen = { path = "../oxiproto-codegen", version = "0.1.1" }
+oxiproto-codegen.workspace = true
 proptest.workspace = true
 criterion.workspace = true
 

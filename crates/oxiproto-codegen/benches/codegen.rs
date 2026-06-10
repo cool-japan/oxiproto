@@ -15,7 +15,7 @@
 //! cargo bench -p oxiproto-codegen            # full benchmark run
 //! ```
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use prost_types::field_descriptor_proto::{Label, Type};
 use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet};
 
@@ -100,22 +100,25 @@ fn bench_generate_flat(c: &mut Criterion) {
 
     group.bench_function("10_messages", |b| {
         b.iter(|| {
-            let result = oxiproto_codegen::generate_with_options(black_box(&fds_small), &opts);
-            black_box(result.unwrap().len())
+            let result =
+                oxiproto_codegen::generate_with_options(std::hint::black_box(&fds_small), &opts);
+            std::hint::black_box(result.unwrap().len())
         })
     });
 
     group.bench_function("50_messages", |b| {
         b.iter(|| {
-            let result = oxiproto_codegen::generate_with_options(black_box(&fds_medium), &opts);
-            black_box(result.unwrap().len())
+            let result =
+                oxiproto_codegen::generate_with_options(std::hint::black_box(&fds_medium), &opts);
+            std::hint::black_box(result.unwrap().len())
         })
     });
 
     group.bench_function("100_messages", |b| {
         b.iter(|| {
-            let result = oxiproto_codegen::generate_with_options(black_box(&fds_large), &opts);
-            black_box(result.unwrap().len())
+            let result =
+                oxiproto_codegen::generate_with_options(std::hint::black_box(&fds_large), &opts);
+            std::hint::black_box(result.unwrap().len())
         })
     });
 
@@ -132,8 +135,8 @@ fn bench_generate_oxi_impl(c: &mut Criterion) {
 
     c.bench_function("generate_oxi_impl_20", |b| {
         b.iter(|| {
-            let result = oxiproto_codegen::generate_with_options(black_box(&fds), &opts);
-            black_box(result.unwrap().len())
+            let result = oxiproto_codegen::generate_with_options(std::hint::black_box(&fds), &opts);
+            std::hint::black_box(result.unwrap().len())
         })
     });
 }
@@ -148,8 +151,8 @@ fn bench_generate_json(c: &mut Criterion) {
 
     c.bench_function("generate_json_20", |b| {
         b.iter(|| {
-            let result = oxiproto_codegen::generate_with_options(black_box(&fds), &opts);
-            black_box(result.unwrap().len())
+            let result = oxiproto_codegen::generate_with_options(std::hint::black_box(&fds), &opts);
+            std::hint::black_box(result.unwrap().len())
         })
     });
 }
@@ -165,8 +168,8 @@ fn bench_generate_formatted(c: &mut Criterion) {
 
     c.bench_function("generate_formatted_20", |b| {
         b.iter(|| {
-            let result = oxiproto_codegen::generate_with_options(black_box(&fds), &opts);
-            black_box(result.unwrap().len())
+            let result = oxiproto_codegen::generate_with_options(std::hint::black_box(&fds), &opts);
+            std::hint::black_box(result.unwrap().len())
         })
     });
 }
@@ -181,8 +184,8 @@ fn bench_generate_module_tree(c: &mut Criterion) {
 
     c.bench_function("generate_module_tree_20x4pkg", |b| {
         b.iter(|| {
-            let result = oxiproto_codegen::generate_module(black_box(&fds), &opts);
-            black_box(result.unwrap().render().len())
+            let result = oxiproto_codegen::generate_module(std::hint::black_box(&fds), &opts);
+            std::hint::black_box(result.unwrap().render().len())
         })
     });
 }
@@ -199,16 +202,17 @@ fn bench_streaming_vs_string(c: &mut Criterion) {
 
     group.bench_function("generate_to_string", |b| {
         b.iter(|| {
-            let result = oxiproto_codegen::generate_with_options(black_box(&fds), &opts);
-            black_box(result.unwrap().len())
+            let result = oxiproto_codegen::generate_with_options(std::hint::black_box(&fds), &opts);
+            std::hint::black_box(result.unwrap().len())
         })
     });
 
     group.bench_function("generate_to_writer_vec", |b| {
         b.iter(|| {
             let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
-            oxiproto_codegen::generate_to_writer(black_box(&fds), &opts, &mut buf).unwrap();
-            black_box(buf.len())
+            oxiproto_codegen::generate_to_writer(std::hint::black_box(&fds), &opts, &mut buf)
+                .unwrap();
+            std::hint::black_box(buf.len())
         })
     });
 

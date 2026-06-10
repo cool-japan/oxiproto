@@ -11,7 +11,7 @@
 
 #![forbid(unsafe_code)]
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use oxiproto_build::compile_str_native;
 
 // ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ fn bench_parse_small(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse");
     group.throughput(Throughput::Bytes(SMALL_PROTO.len() as u64));
     group.bench_function("small_proto", |b| {
-        b.iter(|| compile_str_native(black_box(SMALL_PROTO)).unwrap());
+        b.iter(|| compile_str_native(std::hint::black_box(SMALL_PROTO)).unwrap());
     });
     group.finish();
 }
@@ -226,7 +226,7 @@ fn bench_parse_medium(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse");
     group.throughput(Throughput::Bytes(MEDIUM_PROTO.len() as u64));
     group.bench_function("medium_proto", |b| {
-        b.iter(|| compile_str_native(black_box(MEDIUM_PROTO)).unwrap());
+        b.iter(|| compile_str_native(std::hint::black_box(MEDIUM_PROTO)).unwrap());
     });
     group.finish();
 }
@@ -235,7 +235,7 @@ fn bench_parse_large(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse");
     group.throughput(Throughput::Bytes(LARGE_PROTO.len() as u64));
     group.bench_function("large_proto", |b| {
-        b.iter(|| compile_str_native(black_box(LARGE_PROTO)).unwrap());
+        b.iter(|| compile_str_native(std::hint::black_box(LARGE_PROTO)).unwrap());
     });
     group.finish();
 }
@@ -256,7 +256,7 @@ fn bench_parse_scaling(c: &mut Criterion) {
             BenchmarkId::new("n_messages", n_messages),
             &proto,
             |b, src| {
-                b.iter(|| compile_str_native(black_box(src.as_str())).unwrap());
+                b.iter(|| compile_str_native(std::hint::black_box(src.as_str())).unwrap());
             },
         );
     }
@@ -334,8 +334,8 @@ service UserService {
     group.bench_function("three_file_chain", |b| {
         b.iter(|| {
             oxiproto_build::compile_files_native(
-                black_box(&[&root]),
-                black_box(&[temp_dir.as_path()]),
+                std::hint::black_box(&[&root]),
+                std::hint::black_box(&[temp_dir.as_path()]),
             )
             .unwrap()
         });
@@ -354,7 +354,7 @@ fn bench_deep_nesting(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse_structure");
     group.throughput(Throughput::Bytes(proto.len() as u64));
     group.bench_function("depth_5_nesting", |b| {
-        b.iter(|| compile_str_native(black_box(proto.as_str())).unwrap());
+        b.iter(|| compile_str_native(std::hint::black_box(proto.as_str())).unwrap());
     });
     group.finish();
 }
@@ -438,8 +438,8 @@ message Link{i} {{ Base base = 1; int32 depth = 2; repeated string tags = 3; }}
     group.bench_function("deep_chain_10", |b| {
         b.iter(|| {
             oxiproto_build::compile_files_native(
-                black_box(&[&root]),
-                black_box(&[temp_dir.as_path()]),
+                std::hint::black_box(&[&root]),
+                std::hint::black_box(&[temp_dir.as_path()]),
             )
             .unwrap()
         });
@@ -510,8 +510,8 @@ service DiamondService {
     group.bench_function("diamond_4_files", |b| {
         b.iter(|| {
             oxiproto_build::compile_files_native(
-                black_box(&[&root]),
-                black_box(&[temp_dir.as_path()]),
+                std::hint::black_box(&[&root]),
+                std::hint::black_box(&[temp_dir.as_path()]),
             )
             .unwrap()
         });
@@ -565,8 +565,8 @@ message Leaf{i} {{ int64 id = 1; string name = 2; bool active = 3; }}
     group.bench_function(format!("wide_fanout_{fanout}"), |b| {
         b.iter(|| {
             oxiproto_build::compile_files_native(
-                black_box(&[&root]),
-                black_box(&[temp_dir.as_path()]),
+                std::hint::black_box(&[&root]),
+                std::hint::black_box(&[temp_dir.as_path()]),
             )
             .unwrap()
         });

@@ -12,19 +12,19 @@ OxiProto ships its own native wire codec via the `OxiMessage` trait (no prost de
 ```toml
 [dependencies]
 # Core only (wire format + traits), always Pure Rust.
-oxiproto = "0.1.0"
+oxiproto = "0.1.2"
 
 # Build-time .proto compilation (for build.rs).
-oxiproto = { version = "0.1.0", features = ["build"] }
+oxiproto = { version = "0.1.2", features = ["build"] }
 
 # Runtime reflection + canonical JSON.
-oxiproto = { version = "0.1.0", features = ["reflect", "json"] }
+oxiproto = { version = "0.1.2", features = ["reflect", "json"] }
 
 # Well-Known Types with chrono interop.
-oxiproto = { version = "0.1.0", features = ["wkt-chrono"] }
+oxiproto = { version = "0.1.2", features = ["wkt-chrono"] }
 
 # Everything.
-oxiproto = { version = "0.1.0", features = ["build", "reflect", "wkt-chrono", "codegen", "json"] }
+oxiproto = { version = "0.1.2", features = ["build", "reflect", "wkt-chrono", "codegen", "json"] }
 ```
 
 ## Quick Start

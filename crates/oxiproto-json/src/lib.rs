@@ -13,25 +13,22 @@
 //! - `google.protobuf.Timestamp` ↔ RFC 3339 string, e.g.
 //!   `"2023-11-14T22:13:20Z"`.
 //! - `google.protobuf.Duration` ↔ decimal-seconds string, e.g. `"1.5s"`.
+//! - `google.protobuf.FieldMask` ↔ comma-separated camelCase path string,
+//!   e.g. `"fooBar,bazQux"`.
+//! - `google.protobuf.Value` ↔ the natural JSON scalar/object/array.
+//! - `google.protobuf.ListValue` ↔ JSON array.
+//! - `google.protobuf.Struct` ↔ JSON object.
+//! - `google.protobuf.Any` ↔ `{"@type": "<type_url>", ...fields}` (WKT
+//!   primitives are wrapped as `{"@type": ..., "value": ...}`).  Type-URL
+//!   resolution uses the descriptor pool already registered on the message.
+//! - Infinite / NaN `f32`/`f64` values encoded as `"Infinity"`,
+//!   `"-Infinity"`, and `"NaN"` strings; the same strings are accepted on
+//!   decode.
 //! - Enum values serialized as **name strings**; configurable to emit numbers.
 //! - `repeated` → JSON array; `map<K,V>` → JSON object.
 //! - Default scalar values **omitted** unless `always_print_fields(true)`.
 //!
 //! [canonical Protobuf-JSON spec]: https://protobuf.dev/programming-guides/proto3/#json
-//!
-//! ## M5 Deferred items
-//!
-//! The following items are **not yet implemented** and are slated for a future
-//! milestone:
-//!
-//! - `google.protobuf.Any` — type-URL resolution requires a live
-//!   [`prost_reflect::DescriptorPool`] with the target message registered.
-//!   Currently serialized as an empty object `{}`.
-//! - Infinite `f32`/`f64` as strings — the spec requires emitting
-//!   `"Infinity"`, `"-Infinity"`, and `"NaN"`.  Currently emitted as `null`.
-//! - `google.protobuf.Struct`, `google.protobuf.Value`,
-//!   `google.protobuf.ListValue` — treated as regular messages for now.
-//! - `google.protobuf.FieldMask` — treated as a regular message.
 //!
 //! ## Quick start
 //!

@@ -6,13 +6,13 @@ It eliminates the build-time `protoc` (C++) binary that `prost-build` and `tonic
 `PATH`, by routing all `.proto` parsing and descriptor construction through a native pure-Rust
 parser, and by re-exporting the already-pure `prost` runtime as the wire-format engine.
 
-A consumer with `oxiproto = "0.1.1"` in `[build-dependencies]` regenerates protobuf bindings on a
+A consumer with `oxiproto = "0.1.2"` in `[build-dependencies]` regenerates protobuf bindings on a
 stock `rust:slim` container — no `apt-get install protobuf-compiler`, no cross-compile pre-stage,
 no Bazel toolchain.
 
-## Status: v0.1.1 — 2026-06-04
+## Status: v0.1.2 — released 2026-06-10
 
-**1085 tests passing, zero clippy warnings, zero rustdoc warnings.**
+**1104 tests passing, zero clippy warnings, zero rustdoc warnings.**
 
 | Milestone | Status |
 |-----------|--------|
@@ -47,10 +47,10 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxiproto = "0.1.1"
+oxiproto = "0.1.2"
 
 [build-dependencies]
-oxiproto-build = "0.1.1"
+oxiproto-build = "0.1.2"
 ```
 
 In `build.rs`:
@@ -154,8 +154,8 @@ It is depended on by: **OxiRPC** (gRPC), and any future crate using proto wire e
 
 ## Implementation Statistics
 
-- ~28,800 lines of Rust code (111 source files)
-- 1085 tests (nextest), 0 failures
+- ~42,150 lines of Rust code (141 source files)
+- 1104 tests (nextest), 0 failures
 - 0 clippy warnings (`-D warnings`, all features)
 - 0 rustdoc warnings (`-D warnings`, all features)
 - MSRV: Rust 1.89 (edition 2021)

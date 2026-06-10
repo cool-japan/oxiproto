@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-06-10
+
+### Added
+- **`oxiproto-json` WKT encode/decode (full proto3 JSON spec compliance):**
+  - `google.protobuf.FieldMask` — encode paths as comma-separated camelCase string; decode back to snake_case path list via `camel_to_snake` helper
+  - `google.protobuf.Value` — encode/decode all `kind` variants: `null_value`, `bool_value`, `number_value`, `string_value`, `struct_value`, `list_value`
+  - `google.protobuf.ListValue` — encode/decode as JSON array of `Value` items
+  - `google.protobuf.Struct` — encode/decode as JSON object with string keys and `Value` entries
+  - `google.protobuf.Any` — encode/decode with `@type` URL field and nested message body
+- **Float/double NaN and Infinity** — `from_json` now accepts `"NaN"`, `"Infinity"`, `"-Infinity"` strings for `float` and `double` fields per proto3 JSON spec
+- `wkt_json.rs` integration test suite (565 lines, 47 test cases) covering Inf/NaN decode, FieldMask round-trips, Struct/Value/ListValue encoding, and Any encode/decode
+- `camel_to_snake` conversion helper in `oxiproto-json::from_json` (inverse of existing `snake_to_camel`)
+
+### Changed
+- `to_json` and `from_json` doc-comments updated: removed "Deferred" notes, replaced with complete WKT support summary
+- Benchmark files (`oxiproto-build/benches/parse.rs`, `oxiproto-cli/benches/startup.rs`, `oxiproto-codegen/benches/codegen.rs`) migrated from deprecated `criterion::black_box` to `std::hint::black_box`
+- Workspace dependencies unified to use workspace references (`criterion.workspace = true` etc.)
+- All workspace crates bumped from `0.1.1` to `0.1.2`
+
 ## [0.1.1] - 2026-06-04
 
 ### Added
@@ -35,4 +54,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial 0.1.0 release.
 
+[0.1.2]: https://github.com/cool-japan/oxiproto/releases/tag/v0.1.2
 [0.1.1]: https://github.com/cool-japan/oxiproto/releases/tag/v0.1.1

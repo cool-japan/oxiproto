@@ -11,14 +11,14 @@ The crate parses and resolves `.proto` sources into a `prost_types::FileDescript
 
 ```toml
 [build-dependencies]
-oxiproto-build = "0.1.0"
+oxiproto-build = "0.1.2"
 ```
 
 Using `protox` instead of the native parser:
 
 ```toml
 [build-dependencies]
-oxiproto-build = { version = "0.1.0", default-features = false }
+oxiproto-build = { version = "0.1.2", default-features = false }
 ```
 
 ## Quick Start

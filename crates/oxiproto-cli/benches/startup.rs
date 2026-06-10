@@ -14,7 +14,7 @@
 
 #![forbid(unsafe_code)]
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -113,7 +113,7 @@ fn bench_startup_help(c: &mut Criterion) {
 
     group.bench_function("help", |b| {
         b.iter(|| {
-            let status = Command::new(black_box(bin))
+            let status = Command::new(std::hint::black_box(bin))
                 .arg("--help")
                 .output()
                 .expect("spawn --help");
@@ -133,10 +133,10 @@ fn bench_startup_describe(c: &mut Criterion) {
     let mut group = c.benchmark_group("startup");
     group.bench_function("describe_single_proto", |b| {
         b.iter(|| {
-            let status = Command::new(black_box(bin))
+            let status = Command::new(std::hint::black_box(bin))
                 .args([
                     "describe",
-                    black_box(proto.to_str().expect("utf8")),
+                    std::hint::black_box(proto.to_str().expect("utf8")),
                     "-I",
                     dir.to_str().expect("utf8"),
                 ])
@@ -157,10 +157,10 @@ fn bench_startup_lint(c: &mut Criterion) {
     let mut group = c.benchmark_group("startup");
     group.bench_function("lint_single_proto", |b| {
         b.iter(|| {
-            let status = Command::new(black_box(bin))
+            let status = Command::new(std::hint::black_box(bin))
                 .args([
                     "lint",
-                    black_box(proto.to_str().expect("utf8")),
+                    std::hint::black_box(proto.to_str().expect("utf8")),
                     "-I",
                     dir.to_str().expect("utf8"),
                 ])
@@ -201,7 +201,7 @@ fn bench_gen_scaling(c: &mut Criterion) {
                     let mut cmd = Command::new(binary_path());
                     cmd.arg("gen");
                     for p in protos {
-                        cmd.arg(black_box(p.to_str().expect("utf8")));
+                        cmd.arg(std::hint::black_box(p.to_str().expect("utf8")));
                     }
                     cmd.args([
                         "-I",
@@ -252,7 +252,7 @@ fn bench_memory_proxy_large_set(c: &mut Criterion) {
             let _ = std::fs::remove_dir_all(&out_dir);
             std::fs::create_dir_all(&out_dir).expect("recreate out_dir");
 
-            let mut cmd = Command::new(black_box(bin));
+            let mut cmd = Command::new(std::hint::black_box(bin));
             cmd.arg("gen");
             for p in &protos {
                 cmd.arg(p.to_str().expect("utf8"));
@@ -282,10 +282,10 @@ fn bench_startup_format(c: &mut Criterion) {
     let mut group = c.benchmark_group("startup");
     group.bench_function("format_single_proto", |b| {
         b.iter(|| {
-            let status = Command::new(black_box(bin))
+            let status = Command::new(std::hint::black_box(bin))
                 .args([
                     "format",
-                    black_box(proto.to_str().expect("utf8")),
+                    std::hint::black_box(proto.to_str().expect("utf8")),
                     "-I",
                     dir.to_str().expect("utf8"),
                 ])
@@ -308,11 +308,11 @@ fn bench_startup_breaking_no_changes(c: &mut Criterion) {
     let mut group = c.benchmark_group("startup");
     group.bench_function("breaking_no_changes", |b| {
         b.iter(|| {
-            let status = Command::new(black_box(bin))
+            let status = Command::new(std::hint::black_box(bin))
                 .args([
                     "breaking",
                     "--old",
-                    black_box(proto_str),
+                    std::hint::black_box(proto_str),
                     "--old-include",
                     dir_str,
                     "--new",

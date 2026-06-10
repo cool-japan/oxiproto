@@ -65,11 +65,11 @@ impl From<JsonError> for oxiproto_core::OxiProtoError {
 /// The `descriptor` must match the expected message type.  Use
 /// [`JsonCodec::default()`] for standard behaviour.
 ///
-/// # Deferred (not yet implemented)
-/// - `google.protobuf.Any`: decoded as an empty message.
-/// - NaN / Infinity strings for float fields.
-/// - `google.protobuf.Struct`, `Value`, `ListValue`: decoded as regular
-///   messages.
+/// Well-Known Types receive special decoding:
+/// - Timestamp / Duration / FieldMask / Value / ListValue / Struct / Any
+///   are all decoded per the proto3 JSON specification.
+/// - `NaN`, `"Infinity"`, and `"-Infinity"` strings are accepted for float
+///   and double fields.
 ///
 /// # Errors
 ///
@@ -94,6 +94,13 @@ fn from_json_message(
     match full_name {
         "google.protobuf.Timestamp" => return decode_timestamp(value, descriptor),
         "google.protobuf.Duration" => return decode_duration(value, descriptor),
+        "google.protobuf.FieldMask" => return decode_field_mask(value, descriptor),
+        "google.protobuf.Value" => return decode_proto_value(value, descriptor, codec),
+        "google.protobuf.ListValue" => return decode_list_value(value, descriptor, codec),
+        "google.protobuf.Struct" => return decode_struct(value, descriptor, codec),
+        "google.protobuf.Any" => {
+            return decode_any(value, descriptor, codec);
+        }
         _ => {}
     }
 
@@ -284,9 +291,18 @@ fn decode_scalar(
                 let f = n.as_f64().unwrap_or(0.0) as f32;
                 Ok(Value::F32(f))
             }
+            // Proto3 JSON spec: NaN/Inf are encoded as strings; accept them on decode.
+            JsonValue::String(s) => match s.as_str() {
+                "NaN" => Ok(Value::F32(f32::NAN)),
+                "Infinity" => Ok(Value::F32(f32::INFINITY)),
+                "-Infinity" => Ok(Value::F32(f32::NEG_INFINITY)),
+                other => Err(JsonError::MalformedValue(format!(
+                    "field '{field_name}': invalid float string '{other}'"
+                ))),
+            },
             other => Err(JsonError::WrongType {
                 field: field_name.to_owned(),
-                expected: "number",
+                expected: "number or \"NaN\"/\"Infinity\"/\"-Infinity\"",
                 got: json_type_name(other),
             }),
         },
@@ -296,9 +312,18 @@ fn decode_scalar(
                 let f = n.as_f64().unwrap_or(0.0);
                 Ok(Value::F64(f))
             }
+            // Proto3 JSON spec: NaN/Inf are encoded as strings; accept them on decode.
+            JsonValue::String(s) => match s.as_str() {
+                "NaN" => Ok(Value::F64(f64::NAN)),
+                "Infinity" => Ok(Value::F64(f64::INFINITY)),
+                "-Infinity" => Ok(Value::F64(f64::NEG_INFINITY)),
+                other => Err(JsonError::MalformedValue(format!(
+                    "field '{field_name}': invalid double string '{other}'"
+                ))),
+            },
             other => Err(JsonError::WrongType {
                 field: field_name.to_owned(),
-                expected: "number",
+                expected: "number or \"NaN\"/\"Infinity\"/\"-Infinity\"",
                 got: json_type_name(other),
             }),
         },
@@ -489,6 +514,344 @@ fn decode_duration(
     msg.try_set_field(&nanos_field, Value::I32(dur.nanos))
         .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
 
+    Ok(msg)
+}
+
+// ---------------------------------------------------------------------------
+// Additional WKT decoders
+// ---------------------------------------------------------------------------
+
+/// Decode `google.protobuf.FieldMask` from a JSON string like `"fooBar,bazQux"`.
+///
+/// The JSON string is a comma-separated list of camelCase paths; each path
+/// component is converted back to snake_case to match the proto field names.
+fn decode_field_mask(
+    value: &JsonValue,
+    descriptor: &MessageDescriptor,
+) -> Result<DynamicMessage, JsonError> {
+    let s = value.as_str().ok_or_else(|| JsonError::WrongType {
+        field: "FieldMask".to_owned(),
+        expected: "string",
+        got: json_type_name(value),
+    })?;
+
+    let paths: Vec<prost_reflect::Value> = if s.is_empty() {
+        vec![]
+    } else {
+        s.split(',')
+            .map(|token| {
+                // Each token is a dot-separated list of camelCase components;
+                // convert each component individually to snake_case.
+                let snake = token
+                    .split('.')
+                    .map(camel_to_snake)
+                    .collect::<Vec<_>>()
+                    .join(".");
+                prost_reflect::Value::String(snake)
+            })
+            .collect()
+    };
+
+    let mut msg = DynamicMessage::new(descriptor.clone());
+    let paths_field = descriptor
+        .get_field_by_name("paths")
+        .ok_or_else(|| JsonError::MalformedValue("FieldMask missing 'paths' field".to_owned()))?;
+    msg.try_set_field(&paths_field, prost_reflect::Value::List(paths))
+        .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
+    Ok(msg)
+}
+
+/// Convert a camelCase identifier to snake_case.
+///
+/// Each uppercase letter is replaced by `_<lower>`.  This is the inverse of
+/// `snake_to_camel` defined in `to_json.rs`.
+fn camel_to_snake(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        if c.is_uppercase() {
+            result.push('_');
+            result.extend(c.to_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Decode `google.protobuf.Value` from any JSON value.
+///
+/// The JSON form maps directly:
+/// - `null` → NullValue
+/// - `bool` → BoolValue
+/// - `number` → NumberValue
+/// - `string` → StringValue
+/// - `object` → StructValue
+/// - `array` → ListValue
+fn decode_proto_value(
+    value: &JsonValue,
+    descriptor: &MessageDescriptor,
+    codec: &JsonCodec,
+) -> Result<DynamicMessage, JsonError> {
+    let mut msg = DynamicMessage::new(descriptor.clone());
+
+    let (field_name, field_val) = match value {
+        JsonValue::Null => {
+            let f = descriptor.get_field_by_name("null_value").ok_or_else(|| {
+                JsonError::MalformedValue("Value missing 'null_value' field".to_owned())
+            })?;
+            // NullValue enum value 0
+            (f, prost_reflect::Value::EnumNumber(0))
+        }
+        JsonValue::Bool(b) => {
+            let f = descriptor.get_field_by_name("bool_value").ok_or_else(|| {
+                JsonError::MalformedValue("Value missing 'bool_value' field".to_owned())
+            })?;
+            (f, prost_reflect::Value::Bool(*b))
+        }
+        JsonValue::Number(n) => {
+            let f = descriptor
+                .get_field_by_name("number_value")
+                .ok_or_else(|| {
+                    JsonError::MalformedValue("Value missing 'number_value' field".to_owned())
+                })?;
+            let num = n.as_f64().ok_or_else(|| {
+                JsonError::MalformedValue("number_value out of f64 range".to_owned())
+            })?;
+            (f, prost_reflect::Value::F64(num))
+        }
+        JsonValue::String(s) => {
+            let f = descriptor
+                .get_field_by_name("string_value")
+                .ok_or_else(|| {
+                    JsonError::MalformedValue("Value missing 'string_value' field".to_owned())
+                })?;
+            (f, prost_reflect::Value::String(s.clone()))
+        }
+        JsonValue::Object(_) => {
+            let struct_desc = descriptor
+                .parent_pool()
+                .get_message_by_name("google.protobuf.Struct")
+                .ok_or_else(|| {
+                    JsonError::MalformedValue(
+                        "google.protobuf.Struct not in pool for Value decode".to_owned(),
+                    )
+                })?;
+            let nested = decode_struct(value, &struct_desc, codec)?;
+            let f = descriptor
+                .get_field_by_name("struct_value")
+                .ok_or_else(|| {
+                    JsonError::MalformedValue("Value missing 'struct_value' field".to_owned())
+                })?;
+            (f, prost_reflect::Value::Message(nested))
+        }
+        JsonValue::Array(_) => {
+            let list_desc = descriptor
+                .parent_pool()
+                .get_message_by_name("google.protobuf.ListValue")
+                .ok_or_else(|| {
+                    JsonError::MalformedValue(
+                        "google.protobuf.ListValue not in pool for Value decode".to_owned(),
+                    )
+                })?;
+            let nested = decode_list_value(value, &list_desc, codec)?;
+            let f = descriptor.get_field_by_name("list_value").ok_or_else(|| {
+                JsonError::MalformedValue("Value missing 'list_value' field".to_owned())
+            })?;
+            (f, prost_reflect::Value::Message(nested))
+        }
+    };
+
+    msg.try_set_field(&field_name, field_val)
+        .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
+    Ok(msg)
+}
+
+/// Decode `google.protobuf.ListValue` from a JSON array.
+fn decode_list_value(
+    value: &JsonValue,
+    descriptor: &MessageDescriptor,
+    codec: &JsonCodec,
+) -> Result<DynamicMessage, JsonError> {
+    let JsonValue::Array(arr) = value else {
+        return Err(JsonError::WrongType {
+            field: "ListValue".to_owned(),
+            expected: "array",
+            got: json_type_name(value),
+        });
+    };
+
+    let value_desc = descriptor
+        .parent_pool()
+        .get_message_by_name("google.protobuf.Value")
+        .ok_or_else(|| {
+            JsonError::MalformedValue(
+                "google.protobuf.Value not in pool for ListValue decode".to_owned(),
+            )
+        })?;
+
+    let items: Result<Vec<prost_reflect::Value>, JsonError> = arr
+        .iter()
+        .map(|item| {
+            let nested = decode_proto_value(item, &value_desc, codec)?;
+            Ok(prost_reflect::Value::Message(nested))
+        })
+        .collect();
+
+    let values_field = descriptor
+        .get_field_by_name("values")
+        .ok_or_else(|| JsonError::MalformedValue("ListValue missing 'values' field".to_owned()))?;
+
+    let mut msg = DynamicMessage::new(descriptor.clone());
+    msg.try_set_field(&values_field, prost_reflect::Value::List(items?))
+        .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
+    Ok(msg)
+}
+
+/// Decode `google.protobuf.Struct` from a JSON object.
+fn decode_struct(
+    value: &JsonValue,
+    descriptor: &MessageDescriptor,
+    codec: &JsonCodec,
+) -> Result<DynamicMessage, JsonError> {
+    let JsonValue::Object(obj) = value else {
+        return Err(JsonError::WrongType {
+            field: "Struct".to_owned(),
+            expected: "object",
+            got: json_type_name(value),
+        });
+    };
+
+    let value_desc = descriptor
+        .parent_pool()
+        .get_message_by_name("google.protobuf.Value")
+        .ok_or_else(|| {
+            JsonError::MalformedValue(
+                "google.protobuf.Value not in pool for Struct decode".to_owned(),
+            )
+        })?;
+
+    // Struct.fields is a map<string, Value>
+    let fields_field = descriptor
+        .get_field_by_name("fields")
+        .ok_or_else(|| JsonError::MalformedValue("Struct missing 'fields' field".to_owned()))?;
+
+    let mut map: HashMap<prost_reflect::MapKey, prost_reflect::Value> = HashMap::new();
+    for (k, v) in obj {
+        let nested = decode_proto_value(v, &value_desc, codec)?;
+        map.insert(
+            prost_reflect::MapKey::String(k.clone()),
+            prost_reflect::Value::Message(nested),
+        );
+    }
+
+    let mut msg = DynamicMessage::new(descriptor.clone());
+    msg.try_set_field(&fields_field, prost_reflect::Value::Map(map))
+        .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
+    Ok(msg)
+}
+
+/// Decode `google.protobuf.Any` from a JSON object with an `@type` field.
+///
+/// The JSON representation is:
+/// - For WKT scalars (Timestamp, Duration, FieldMask, Struct, Value, ListValue):
+///   `{"@type": "<url>", "value": <primitive>}`
+/// - For regular messages:
+///   `{"@type": "<url>", ...fields...}`
+///
+/// In both cases `@type` drives descriptor lookup; the inner message is decoded
+/// recursively and re-encoded to binary to populate `Any.value`.
+fn decode_any(
+    value: &JsonValue,
+    descriptor: &MessageDescriptor,
+    codec: &JsonCodec,
+) -> Result<DynamicMessage, JsonError> {
+    use prost::Message as _;
+
+    let JsonValue::Object(obj) = value else {
+        return Err(JsonError::WrongType {
+            field: "Any".to_owned(),
+            expected: "object with @type",
+            got: json_type_name(value),
+        });
+    };
+
+    let type_url = obj
+        .get("@type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| JsonError::MalformedValue("Any missing '@type' field".to_owned()))?;
+
+    // Strip prefix to get the fully-qualified message name.
+    let fqn = type_url.rsplit('/').next().unwrap_or(type_url);
+
+    let pool = descriptor.parent_pool();
+    let inner_desc = pool.get_message_by_name(fqn).ok_or_else(|| {
+        JsonError::MalformedValue(format!("Any: type '{fqn}' not found in descriptor pool"))
+    })?;
+
+    // Determine if this is a WKT that uses the "value" key wrapper form.
+    let is_value_wrapper_wkt = matches!(
+        inner_desc.full_name(),
+        "google.protobuf.Timestamp"
+            | "google.protobuf.Duration"
+            | "google.protobuf.FieldMask"
+            | "google.protobuf.Value"
+            | "google.protobuf.ListValue"
+            | "google.protobuf.Struct"
+            | "google.protobuf.BoolValue"
+            | "google.protobuf.Int32Value"
+            | "google.protobuf.Int64Value"
+            | "google.protobuf.UInt32Value"
+            | "google.protobuf.UInt64Value"
+            | "google.protobuf.FloatValue"
+            | "google.protobuf.DoubleValue"
+            | "google.protobuf.StringValue"
+            | "google.protobuf.BytesValue"
+    );
+
+    let inner_json = if is_value_wrapper_wkt {
+        // The actual value lives under the "value" key.
+        obj.get("value").unwrap_or(&JsonValue::Null)
+    } else {
+        // Build a new object excluding the @type key for regular messages.
+        value
+    };
+
+    let inner_msg = if is_value_wrapper_wkt {
+        from_json_message(inner_json, &inner_desc, codec)?
+    } else {
+        // Pass the full object but we need to strip @type so unknown-field
+        // check doesn't fire. Build a filtered object.
+        let filtered: serde_json::Map<String, JsonValue> = obj
+            .iter()
+            .filter(|(k, _)| k.as_str() != "@type")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let filtered_val = JsonValue::Object(filtered);
+        from_json_message(&filtered_val, &inner_desc, codec)?
+    };
+
+    // Re-encode the inner message to bytes.
+    let encoded_bytes = inner_msg.encode_to_vec();
+
+    // Build the Any DynamicMessage.
+    let type_url_field = descriptor
+        .get_field_by_name("type_url")
+        .ok_or_else(|| JsonError::MalformedValue("Any missing 'type_url' field".to_owned()))?;
+    let value_field = descriptor
+        .get_field_by_name("value")
+        .ok_or_else(|| JsonError::MalformedValue("Any missing 'value' field".to_owned()))?;
+
+    let mut msg = DynamicMessage::new(descriptor.clone());
+    msg.try_set_field(
+        &type_url_field,
+        prost_reflect::Value::String(type_url.to_owned()),
+    )
+    .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
+    msg.try_set_field(
+        &value_field,
+        prost_reflect::Value::Bytes(prost::bytes::Bytes::from(encoded_bytes)),
+    )
+    .map_err(|e| JsonError::MalformedValue(e.to_string()))?;
     Ok(msg)
 }
 

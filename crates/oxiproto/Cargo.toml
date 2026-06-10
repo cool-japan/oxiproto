@@ -46,12 +46,12 @@ optional = true
 [build-dependencies]
 prost-build.workspace = true
 prost-types.workspace = true
-oxiproto-codegen = { path = "../oxiproto-codegen", version = "0.1.1" }
+oxiproto-codegen.workspace = true
 
 [dev-dependencies]
 prost = { workspace = true, features = ["derive"] }
 prost-types.workspace = true
-oxiproto-codegen = { path = "../oxiproto-codegen", version = "0.1.1" }
-oxiproto-wkt = { path = "../oxiproto-wkt", version = "0.1.1" }
+oxiproto-codegen.workspace = true
+oxiproto-wkt.workspace = true
 serde_json.workspace = true
 base64.workspace = true

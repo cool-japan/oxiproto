@@ -13,20 +13,20 @@ All standard WKT types are re-exported from this crate, so callers typically dep
 
 ```toml
 [dependencies]
-oxiproto-wkt = "0.1.0"
+oxiproto-wkt = "0.1.2"
 
 # Optional: chrono interop
-# oxiproto-wkt = { version = "0.1.0", features = ["chrono"] }
+# oxiproto-wkt = { version = "0.1.2", features = ["chrono"] }
 
 # Optional: time interop
-# oxiproto-wkt = { version = "0.1.0", features = ["time"] }
+# oxiproto-wkt = { version = "0.1.2", features = ["time"] }
 ```
 
 Or, via the facade (use `wkt-chrono` for the `chrono` methods):
 
 ```toml
 [dependencies]
-oxiproto = { version = "0.1.0", features = ["wkt"] }
+oxiproto = { version = "0.1.2", features = ["wkt"] }
 ```
 
 ## Quick Start

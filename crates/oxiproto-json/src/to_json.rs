@@ -9,11 +9,9 @@ use crate::codec::JsonCodec;
 /// Convert a [`DynamicMessage`] to a [`serde_json::Value`] following the
 /// canonical Protobuf-JSON mapping.
 ///
-/// # Deferred (not yet implemented)
-/// - `google.protobuf.Any` — emitted as an opaque object `{}` with a comment
-///   in the source; a future release will handle type-URL resolution.
-/// - `google.protobuf.Struct`, `google.protobuf.Value`,
-///   `google.protobuf.ListValue` — treated as regular messages for now.
+/// Well-Known Types receive special encoding:
+/// - Timestamp / Duration / FieldMask / Value / ListValue / Struct / Any
+///   are all encoded per the proto3 JSON specification.
 pub fn to_json(msg: &DynamicMessage, codec: &JsonCodec) -> JsonValue {
     to_json_message(msg, codec)
 }
@@ -26,7 +24,11 @@ fn to_json_message(msg: &DynamicMessage, codec: &JsonCodec) -> JsonValue {
     match full_name {
         "google.protobuf.Timestamp" => return timestamp_to_json(msg),
         "google.protobuf.Duration" => return duration_to_json(msg),
-        // DEFERRED: google.protobuf.Any — fall through to regular object
+        "google.protobuf.FieldMask" => return field_mask_to_json(msg),
+        "google.protobuf.Value" => return proto_value_to_json(msg, codec),
+        "google.protobuf.ListValue" => return list_value_to_json(msg, codec),
+        "google.protobuf.Struct" => return struct_to_json(msg, codec),
+        "google.protobuf.Any" => return any_to_json(msg, codec),
         _ => {}
     }
 
@@ -226,6 +228,236 @@ fn duration_to_json(msg: &DynamicMessage) -> JsonValue {
 
     let dur = ProtoDuration { seconds, nanos };
     JsonValue::String(dur.to_duration_string())
+}
+
+/// Encode a `google.protobuf.FieldMask` as a JSON string.
+///
+/// Paths are joined with `,`; each dot-separated component is converted from
+/// snake_case to camelCase.  Example: `["foo_bar", "baz_qux"]` → `"fooBar,bazQux"`.
+fn field_mask_to_json(msg: &DynamicMessage) -> JsonValue {
+    let paths_raw = msg
+        .get_field_by_name("paths")
+        .and_then(|v| match v.as_ref() {
+            Value::List(list) => {
+                let strings: Vec<String> = list
+                    .iter()
+                    .filter_map(|item| {
+                        if let Value::String(s) = item {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Some(strings)
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let encoded: Vec<String> = paths_raw
+        .iter()
+        .map(|path| {
+            // Convert each dot-separated component from snake_case to camelCase.
+            path.split('.')
+                .map(snake_to_camel)
+                .collect::<Vec<_>>()
+                .join(".")
+        })
+        .collect();
+
+    JsonValue::String(encoded.join(","))
+}
+
+/// Encode a `google.protobuf.Value` to its JSON representation.
+///
+/// Unwraps the `kind` oneof:
+/// - NullValue → `null`
+/// - BoolValue → `bool`
+/// - NumberValue → `number`
+/// - StringValue → `string`
+/// - StructValue → `object` (recurse)
+/// - ListValue → `array` (recurse)
+fn proto_value_to_json(msg: &DynamicMessage, codec: &JsonCodec) -> JsonValue {
+    // Check each oneof arm in field-number order (1..=6).
+    // Walk the `kind` oneof fields in field-number order (1..=6).
+    // We use `msg.fields()` which only yields fields that are explicitly set
+    // (non-default), so whichever oneof arm is set will appear here.
+    for (field_desc, val) in msg.fields() {
+        match field_desc.name() {
+            "null_value" => return JsonValue::Null,
+            "bool_value" => {
+                if let Value::Bool(b) = val {
+                    return JsonValue::Bool(*b);
+                }
+            }
+            "number_value" => {
+                if let Value::F64(n) = val {
+                    return Number::from_f64(*n)
+                        .map(JsonValue::Number)
+                        .unwrap_or(JsonValue::Null);
+                }
+            }
+            "string_value" => {
+                if let Value::String(s) = val {
+                    return JsonValue::String(s.clone());
+                }
+            }
+            "struct_value" => {
+                if let Value::Message(nested) = val {
+                    return struct_to_json(nested, codec);
+                }
+            }
+            "list_value" => {
+                if let Value::Message(nested) = val {
+                    return list_value_to_json(nested, codec);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Default: null (no kind set or all defaults)
+    JsonValue::Null
+}
+
+/// Encode a `google.protobuf.ListValue` to a JSON array.
+fn list_value_to_json(msg: &DynamicMessage, codec: &JsonCodec) -> JsonValue {
+    let items = msg
+        .get_field_by_name("values")
+        .and_then(|v| match v.as_ref() {
+            Value::List(list) => {
+                let arr: Vec<JsonValue> = list
+                    .iter()
+                    .filter_map(|item| {
+                        if let Value::Message(nested) = item {
+                            Some(proto_value_to_json(nested, codec))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Some(arr)
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    JsonValue::Array(items)
+}
+
+/// Encode a `google.protobuf.Struct` to a JSON object.
+fn struct_to_json(msg: &DynamicMessage, codec: &JsonCodec) -> JsonValue {
+    let mut obj = JsonMap::new();
+
+    if let Some(v) = msg.get_field_by_name("fields") {
+        if let Value::Map(map) = v.as_ref() {
+            for (key, val) in map {
+                let key_str = if let MapKey::String(s) = key {
+                    s.clone()
+                } else {
+                    continue;
+                };
+                let json_val = if let Value::Message(nested) = val {
+                    proto_value_to_json(nested, codec)
+                } else {
+                    JsonValue::Null
+                };
+                obj.insert(key_str, json_val);
+            }
+        }
+    }
+
+    JsonValue::Object(obj)
+}
+
+/// Encode a `google.protobuf.Any` to a JSON object with `@type`.
+///
+/// The inner message bytes are decoded using the descriptor found in the pool.
+/// If the inner type is a WKT that encodes as a primitive (Timestamp, Duration,
+/// FieldMask, Value, ListValue, Struct, and wrapper types), the result is
+/// `{"@type": "<url>", "value": <primitive>}`.  Regular messages have their
+/// fields inlined with `@type` prepended.
+fn any_to_json(msg: &DynamicMessage, codec: &JsonCodec) -> JsonValue {
+    let type_url = msg
+        .get_field_by_name("type_url")
+        .and_then(|v| match v.as_ref() {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let value_bytes = msg
+        .get_field_by_name("value")
+        .and_then(|v| match v.as_ref() {
+            Value::Bytes(b) => Some(b.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    if type_url.is_empty() {
+        return JsonValue::Object(JsonMap::new());
+    }
+
+    let fqn = type_url.rsplit('/').next().unwrap_or(type_url.as_str());
+
+    let desc = msg.descriptor();
+    let pool = desc.parent_pool();
+    let inner_desc = match pool.get_message_by_name(fqn) {
+        Some(d) => d,
+        None => {
+            // Unknown type — emit raw Any as object
+            let mut obj = JsonMap::new();
+            obj.insert("@type".to_owned(), JsonValue::String(type_url.clone()));
+            obj.insert(
+                "value".to_owned(),
+                JsonValue::String(STANDARD.encode(value_bytes.as_ref())),
+            );
+            return JsonValue::Object(obj);
+        }
+    };
+
+    let inner_msg = match DynamicMessage::decode(inner_desc.clone(), value_bytes.as_ref()) {
+        Ok(m) => m,
+        Err(_) => return JsonValue::Object(JsonMap::new()),
+    };
+
+    // Determine if this WKT encodes as a non-object primitive.
+    let is_value_wrapper_wkt = matches!(
+        inner_desc.full_name(),
+        "google.protobuf.Timestamp"
+            | "google.protobuf.Duration"
+            | "google.protobuf.FieldMask"
+            | "google.protobuf.Value"
+            | "google.protobuf.ListValue"
+            | "google.protobuf.Struct"
+            | "google.protobuf.BoolValue"
+            | "google.protobuf.Int32Value"
+            | "google.protobuf.Int64Value"
+            | "google.protobuf.UInt32Value"
+            | "google.protobuf.UInt64Value"
+            | "google.protobuf.FloatValue"
+            | "google.protobuf.DoubleValue"
+            | "google.protobuf.StringValue"
+            | "google.protobuf.BytesValue"
+    );
+
+    let inner_json = to_json_message(&inner_msg, codec);
+
+    let mut obj = JsonMap::new();
+    obj.insert("@type".to_owned(), JsonValue::String(type_url.clone()));
+
+    if is_value_wrapper_wkt {
+        // Wrap non-object inner value under "value" key.
+        obj.insert("value".to_owned(), inner_json);
+    } else {
+        // Inline the fields of the inner message.
+        if let JsonValue::Object(inner_obj) = inner_json {
+            for (k, v) in inner_obj {
+                obj.insert(k, v);
+            }
+        }
+    }
+
+    JsonValue::Object(obj)
 }
 
 /// Convert snake_case field name to camelCase.
