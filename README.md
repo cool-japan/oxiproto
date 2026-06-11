@@ -6,11 +6,11 @@ It eliminates the build-time `protoc` (C++) binary that `prost-build` and `tonic
 `PATH`, by routing all `.proto` parsing and descriptor construction through a native pure-Rust
 parser, and by re-exporting the already-pure `prost` runtime as the wire-format engine.
 
-A consumer with `oxiproto = "0.1.2"` in `[build-dependencies]` regenerates protobuf bindings on a
+A consumer with `oxiproto = "0.1.3"` in `[build-dependencies]` regenerates protobuf bindings on a
 stock `rust:slim` container — no `apt-get install protobuf-compiler`, no cross-compile pre-stage,
 no Bazel toolchain.
 
-## Status: v0.1.2 — released 2026-06-10
+## Status: v0.1.3 (work in progress)
 
 **1104 tests passing, zero clippy warnings, zero rustdoc warnings.**
 
@@ -47,10 +47,10 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxiproto = "0.1.2"
+oxiproto = "0.1.3"
 
 [build-dependencies]
-oxiproto-build = "0.1.2"
+oxiproto-build = "0.1.3"
 ```
 
 In `build.rs`:
