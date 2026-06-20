@@ -110,5 +110,5 @@ oxiproto-json now delegates all WKT formatting to oxiproto-wkt traits (2026-06-0
     chrono dep removed from oxiproto-json; oxiproto-wkt added as dep instead.
 - [ ] Ensure oxirpc uses Timestamp/Duration for deadline/timeout metadata
   - DEFERRED: oxirpc is a separate workspace (~/work/oxirpc); blocked on oxirpc integration work.
-- [ ] Coordinate with oxiproto-reflect for dynamic Any unpacking
-  - DEFERRED: Requires prost-reflect DynamicMessage integration; tracked in oxiproto-reflect roadmap.
+- [x] Coordinate with oxiproto-reflect for dynamic Any unpacking (done 2026-06-19)
+  - **Implemented:** Added `reflect` feature to `oxiproto-wkt` with `oxiproto-reflect` as an optional dependency. `AnyExt::unpack_dynamic(&pool)` added to the `AnyExt` trait (behind `#[cfg(feature = "reflect")]`): resolves the `type_url` type name against a `NativeDescriptorPool`, then calls `NativeDynamicMessage::decode(desc, &self.value)`. Returns `Option<Result<NativeDynamicMessage, ReflectError>>`. 5 tests in `tests/any_dynamic.rs` covering: round-trip (encode Foo → pack into Any → unpack_dynamic → re-encode → bytes equal), wrong type_url returns None, malformed bytes returns Err, empty value returns empty message, type_name extraction. Zero clippy warnings under both default and `--features reflect` builds.

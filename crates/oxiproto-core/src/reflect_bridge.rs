@@ -402,7 +402,7 @@ impl ReflectMetadata {
 /// // Look up and re-encode a message from raw bytes
 /// let widget = Widget { id: 123 };
 /// let bytes = widget.encode_to_vec();
-/// let re_encoded = registry.encode_by_name("ui.Widget", &bytes).unwrap();
+/// let re_encoded = registry.encode_by_name("ui.Widget", &bytes).unwrap().unwrap();
 /// assert_eq!(re_encoded, bytes);
 /// ```
 pub struct MessageRegistry {

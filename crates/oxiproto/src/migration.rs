@@ -55,7 +55,7 @@
 //!
 //! ### Before (prost-build)
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! fn main() {
 //!     prost_build::compile_protos(
 //!         &["src/model.proto"],
@@ -66,7 +66,7 @@
 //!
 //! ### After (oxiproto-build)
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! fn main() {
 //!     // `compile_protos` from oxiproto-build has the same signature.
 //!     oxiproto::build::compile_protos(

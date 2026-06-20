@@ -2,6 +2,13 @@
 //!
 //! `Any` wraps an arbitrary protobuf message together with a type URL that
 //! identifies the message type.
+//!
+//! ## Dynamic unpacking (requires `reflect` feature)
+//!
+//! When the `reflect` feature is enabled, [`AnyExt::unpack_dynamic`] is
+//! available. It resolves the `type_url` against a `NativeDescriptorPool`
+//! and returns a `NativeDynamicMessage` without knowing the concrete Rust
+//! type at compile time.
 
 use prost::Message;
 use prost_types::Any;
@@ -35,6 +42,41 @@ pub trait AnyExt {
 
     /// Returns the type name portion of the type URL (after the last `/`).
     fn type_name(&self) -> &str;
+
+    /// Dynamically unpack this `Any` into a `NativeDynamicMessage` by
+    /// resolving the type URL against the given descriptor pool.
+    ///
+    /// The full type name is extracted from the `type_url` as the component
+    /// after the last `/`. The pool is then queried for that name using
+    /// `NativeDescriptorPool::get_message_by_name`.
+    ///
+    /// Returns `None` if the type is not registered in the pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the wire bytes in `self.value` cannot be decoded
+    /// as the resolved message type (malformed data).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use prost_types::Any;
+    /// use oxiproto_wkt::AnyExt;
+    /// use oxiproto_reflect::{NativeDescriptorPool, ReflectError};
+    ///
+    /// // pool: NativeDescriptorPool built from a FileDescriptorSet
+    /// let result: Option<Result<_, ReflectError>> = any.unpack_dynamic(&pool);
+    /// if let Some(Ok(msg)) = result {
+    ///     println!("{:?}", msg);
+    /// }
+    /// ```
+    ///
+    /// This method is only available when the `reflect` feature is enabled.
+    #[cfg(feature = "reflect")]
+    fn unpack_dynamic(
+        &self,
+        pool: &oxiproto_reflect::NativeDescriptorPool,
+    ) -> Option<Result<oxiproto_reflect::NativeDynamicMessage, oxiproto_reflect::ReflectError>>;
 }
 
 impl AnyExt for Any {
@@ -63,6 +105,20 @@ impl AnyExt for Any {
 
     fn type_name(&self) -> &str {
         self.type_url.rsplit('/').next().unwrap_or(&self.type_url)
+    }
+
+    #[cfg(feature = "reflect")]
+    fn unpack_dynamic(
+        &self,
+        pool: &oxiproto_reflect::NativeDescriptorPool,
+    ) -> Option<Result<oxiproto_reflect::NativeDynamicMessage, oxiproto_reflect::ReflectError>>
+    {
+        let full_name = self.type_name();
+        let desc = pool.get_message_by_name(full_name)?;
+        Some(oxiproto_reflect::NativeDynamicMessage::decode(
+            desc,
+            &self.value,
+        ))
     }
 }
 

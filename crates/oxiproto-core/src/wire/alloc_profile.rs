@@ -41,12 +41,11 @@
 //! let mut prof = ProfiledDecodeBuffer::new(&bytes, &mut stats);
 //!
 //! let _t1 = prof.read_tag().unwrap();
-//! prof.record_string_alloc(5);   // "hello" → 5 bytes owned
+//! let s1 = prof.inner_mut().read_string().unwrap().to_owned(); // consume "hello"
+//! prof.record_string_alloc(s1.len());   // "hello" → 5 bytes owned
 //! let _t2 = prof.read_tag().unwrap();
-//! prof.record_string_alloc(5);   // "world" → 5 bytes owned
-//!
-//! // Skip to end so the underlying cursor is consumed.
-//! let _ = prof.inner_mut().read_string(); // skip remaining
+//! let s2 = prof.inner_mut().read_string().unwrap().to_owned(); // consume "world"
+//! prof.record_string_alloc(s2.len());   // "world" → 5 bytes owned
 //!
 //! assert_eq!(stats.string_alloc_count, 2);
 //! assert_eq!(stats.string_alloc_bytes, 10);

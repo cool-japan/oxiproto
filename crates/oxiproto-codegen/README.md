@@ -11,14 +11,14 @@ This crate is purely a string-in / string-out transform: it does not parse `.pro
 
 ```toml
 [dependencies]
-oxiproto-codegen = "0.1.2"
+oxiproto-codegen = "0.1.3"
 ```
 
 With `rustfmt`-quality formatting of the generated source via `prettyplease`:
 
 ```toml
 [dependencies]
-oxiproto-codegen = { version = "0.1.2", features = ["format"] }
+oxiproto-codegen = { version = "0.1.3", features = ["format"] }
 ```
 
 ## Quick Start

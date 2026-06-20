@@ -14,6 +14,7 @@ categories = ["encoding", "date-and-time"]
 default = []
 chrono = ["dep:chrono"]
 time = ["dep:time"]
+reflect = ["dep:oxiproto-reflect"]
 
 [dependencies]
 oxiproto-core.workspace = true
@@ -28,9 +29,14 @@ optional = true
 workspace = true
 optional = true
 
+[dependencies.oxiproto-reflect]
+workspace = true
+optional = true
+
 [dev-dependencies]
 criterion.workspace = true
 prost = { workspace = true, features = ["derive"] }
+oxiproto-reflect.workspace = true
 
 [[bench]]
 name = "wkt"
