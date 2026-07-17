@@ -3,6 +3,7 @@
 use clap::Args;
 use std::path::{Path, PathBuf};
 
+use crate::error::CliError;
 use crate::util::Verbosity;
 
 /// Arguments for the `gen` subcommand.
@@ -52,7 +53,7 @@ pub struct GenArgs {
 ///
 /// Returns an error if any proto file is missing, if parsing fails, if
 /// codegen fails, or if writing output files fails.
-pub fn run(args: GenArgs, verbosity: Verbosity) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: GenArgs, verbosity: Verbosity) -> Result<(), CliError> {
     // Collect all proto files from inputs (expanding directories if recursive).
     let mut all_protos: Vec<PathBuf> = Vec::new();
     for input in &args.protos {
@@ -70,7 +71,7 @@ pub fn run(args: GenArgs, verbosity: Verbosity) -> Result<(), Box<dyn std::error
     // Validate each resolved file exists.
     for proto in &all_protos {
         if !proto.exists() {
-            return Err(format!("proto file not found: {}", proto.display()).into());
+            return Err(CliError::NotFound(proto.display().to_string()));
         }
     }
 
@@ -132,7 +133,7 @@ pub fn run(args: GenArgs, verbosity: Verbosity) -> Result<(), Box<dyn std::error
 ///    If found, convert dots to underscores → `foo_bar.rs`.
 /// 2. Fall back to the file stem → `service.rs` from `service.proto`.
 /// 3. Error if the stem is empty.
-fn derive_output_filename(proto_path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+fn derive_output_filename(proto_path: &Path) -> Result<String, CliError> {
     // Attempt to open and scan the file for a package declaration.
     if let Ok(contents) = std::fs::read_to_string(proto_path) {
         for line in contents.lines().take(20) {

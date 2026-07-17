@@ -860,7 +860,7 @@ fn emit_merge_body(
         if fi.is_repeated {
             if fi.ftype == Type::Message as i32 {
                 body.push_str("                    let _bytes = buf.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
-                body.push_str("                    let mut _inner_buf = ::oxiproto_core::wire::DecodeBuffer::new(_bytes);\n");
+                body.push_str("                    let mut _inner_buf = buf.nested(_bytes).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
                 // We can't call T::decode_raw here because we don't know the type name
                 // Instead, emit a placeholder that will require OxiMessage bound
                 body.push_str("                    let mut _new_item = Default::default();\n");
@@ -901,7 +901,7 @@ fn emit_merge_body(
             }
         } else if fi.ftype == Type::Message as i32 {
             body.push_str("                    let _bytes = buf.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
-            body.push_str("                    let mut _inner_buf = ::oxiproto_core::wire::DecodeBuffer::new(_bytes);\n");
+            body.push_str("                    let mut _inner_buf = buf.nested(_bytes).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
             body.push_str(&format!(
                 "                    if self.{}.is_none() {{ self.{0} = Some(Default::default()); }}\n",
                 fi.name
@@ -944,7 +944,7 @@ fn emit_merge_body(
             body.push_str(&format!("                {field_num} => {{\n"));
             if ftype == Type::Message as i32 {
                 body.push_str("                    let _bytes = buf.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
-                body.push_str("                    let mut _inner_buf = ::oxiproto_core::wire::DecodeBuffer::new(_bytes);\n");
+                body.push_str("                    let mut _inner_buf = buf.nested(_bytes).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
                 body.push_str("                    let mut _inner: Box<_> = Default::default();\n");
                 body.push_str(
                     "                    ::oxiproto_core::OxiMessage::merge(_inner.as_mut(), &mut _inner_buf)?;\n",
@@ -1043,7 +1043,7 @@ fn emit_map_merge(
 
                 body.push_str(&format!("                {field_number} => {{\n"));
                 body.push_str("                    let _entry_bytes = buf.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
-                body.push_str("                    let mut _eb = ::oxiproto_core::wire::DecodeBuffer::new(_entry_bytes);\n");
+                body.push_str("                    let mut _eb = buf.nested(_entry_bytes).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
                 body.push_str("                    let mut _k = Default::default();\n");
                 body.push_str("                    let mut _v = Default::default();\n");
                 body.push_str("                    while !_eb.is_empty() {\n");
@@ -1056,7 +1056,7 @@ fn emit_map_merge(
                 body.push_str("                            2 => {\n");
                 if vtype == Type::Message as i32 {
                     body.push_str("                                let _vb = _eb.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
-                    body.push_str("                                let mut _vbuf = ::oxiproto_core::wire::DecodeBuffer::new(_vb);\n");
+                    body.push_str("                                let mut _vbuf = _eb.nested(_vb).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
                     body.push_str("                                ::oxiproto_core::OxiMessage::merge(&mut _v, &mut _vbuf)?;\n");
                 } else {
                     let v_decode =

@@ -6,6 +6,8 @@
 use clap::Args;
 use std::path::PathBuf;
 
+use crate::error::CliError;
+
 // ---------------------------------------------------------------------------
 // CLI args and violation type
 // ---------------------------------------------------------------------------
@@ -50,13 +52,10 @@ pub struct LintViolation {
 /// # Errors
 ///
 /// Returns an error if compilation fails or if any violations are found.
-pub fn run(
-    args: LintArgs,
-    _verbosity: crate::util::Verbosity,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: LintArgs, _verbosity: crate::util::Verbosity) -> Result<(), CliError> {
     for p in &args.protos {
         if !p.exists() {
-            return Err(format!("proto file not found: {}", p.display()).into());
+            return Err(CliError::NotFound(p.display().to_string()));
         }
     }
 

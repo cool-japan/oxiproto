@@ -4,6 +4,7 @@ use clap::Args;
 use std::io::Read;
 use std::path::PathBuf;
 
+use crate::error::CliError;
 use crate::util::Verbosity;
 
 use oxiproto_reflect::{DescriptorPool, DynamicMessage};
@@ -35,13 +36,10 @@ pub struct ConvertArgs {
 }
 
 /// Build a [`DescriptorPool`] from the given proto files.
-fn build_pool(
-    protos: &[PathBuf],
-    includes: &[PathBuf],
-) -> Result<DescriptorPool, Box<dyn std::error::Error>> {
+fn build_pool(protos: &[PathBuf], includes: &[PathBuf]) -> Result<DescriptorPool, CliError> {
     for proto in protos {
         if !proto.exists() {
-            return Err(format!("proto file not found: {}", proto.display()).into());
+            return Err(CliError::NotFound(proto.display().to_string()));
         }
     }
 
@@ -52,7 +50,7 @@ fn build_pool(
 }
 
 /// Read all bytes from the input file or stdin.
-fn read_input(input: &Option<PathBuf>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn read_input(input: &Option<PathBuf>) -> Result<Vec<u8>, CliError> {
     match input {
         Some(path) => Ok(std::fs::read(path)?),
         None => {
@@ -64,7 +62,7 @@ fn read_input(input: &Option<PathBuf>) -> Result<Vec<u8>, Box<dyn std::error::Er
 }
 
 /// Write bytes to the output file or stdout.
-fn write_output(output: &Option<PathBuf>, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+fn write_output(output: &Option<PathBuf>, data: &[u8]) -> Result<(), CliError> {
     match output {
         Some(path) => {
             std::fs::write(path, data)?;
@@ -85,10 +83,7 @@ fn write_output(output: &Option<PathBuf>, data: &[u8]) -> Result<(), Box<dyn std
 ///
 /// Returns an error if the proto cannot be parsed, the message type is not
 /// found, the input is not valid JSON, or I/O fails.
-pub fn run_encode(
-    args: ConvertArgs,
-    verbosity: Verbosity,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_encode(args: ConvertArgs, verbosity: Verbosity) -> Result<(), CliError> {
     let _ = verbosity; // reserved for future verbose progress messages
     let pool = build_pool(&args.protos, &args.include)?;
     let descriptor = pool
@@ -114,10 +109,7 @@ pub fn run_encode(
 ///
 /// Returns an error if the proto cannot be parsed, the message type is not
 /// found, the input is not valid protobuf, or I/O fails.
-pub fn run_decode(
-    args: ConvertArgs,
-    verbosity: Verbosity,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_decode(args: ConvertArgs, verbosity: Verbosity) -> Result<(), CliError> {
     let _ = verbosity; // reserved for future verbose progress messages
     let pool = build_pool(&args.protos, &args.include)?;
     let descriptor = pool

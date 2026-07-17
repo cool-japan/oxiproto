@@ -1,0 +1,29 @@
+[package]
+name           = "oxiproto-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description    = "Runnable examples for the OxiProto workspace (not published)"
+publish        = false
+
+[[example]]
+name = "encode_decode"
+path = "encode_decode.rs"
+
+[[example]]
+name = "reflection"
+path = "reflection.rs"
+
+[[example]]
+name = "codegen_usage"
+path = "codegen_usage.rs"
+
+[dependencies]
+oxiproto-core    = { workspace = true }
+oxiproto-build   = { workspace = true }
+oxiproto-reflect = { workspace = true }
+oxiproto-codegen = { workspace = true }
+prost            = { workspace = true }
+prost-reflect    = { workspace = true }

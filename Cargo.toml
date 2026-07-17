@@ -9,6 +9,7 @@ members = [
     "crates/oxiproto-codegen",
     "crates/oxiproto-cli",
     "crates/oxiproto-json",
+    "examples",
 ]
 
 [workspace.package]

@@ -174,7 +174,12 @@ fn decode_single_value(
                 pool: field.pool.clone(),
                 index: idx,
             };
-            let nested = DynamicMessage::decode(nested_desc, payload)?;
+            // Descend through the shared recursion budget: `nested` returns a
+            // depth-incremented buffer and rejects input that nests deeper than
+            // `MAX_DECODE_DEPTH`, guarding against stack-overflow DoS.
+            let mut nested_dec = dec.nested(payload).map_err(wire_err)?;
+            let mut nested = DynamicMessage::new(nested_desc);
+            decode_into(&mut nested, &mut nested_dec)?;
             Ok(Value::Message(Box::new(nested)))
         }
         kind => decode_scalar_with_tag(kind, tag, dec, field),
@@ -273,7 +278,9 @@ fn decode_map_entry(
         other => default_scalar_value(other),
     };
 
-    let mut entry_dec = DecodeBuffer::new(payload);
+    // A map entry is itself a nested message level; descend through the shared
+    // recursion budget so deeply nested map values cannot overflow the stack.
+    let mut entry_dec = dec.nested(payload).map_err(wire_err)?;
     while !entry_dec.is_empty() {
         let entry_tag = entry_dec.read_tag().map_err(wire_err)?;
         match entry_tag.field_number {

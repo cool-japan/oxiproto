@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+use crate::error::CliError;
 use crate::util::Verbosity;
 
 /// Run the `man` subcommand: generate man page files into `output_dir`.
@@ -19,7 +20,7 @@ use crate::util::Verbosity;
 ///
 /// Returns an error if the output directory cannot be created or if any man
 /// page file cannot be written.
-pub fn run(output: PathBuf, verbosity: Verbosity) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(output: PathBuf, verbosity: Verbosity) -> Result<(), CliError> {
     use clap::CommandFactory;
 
     std::fs::create_dir_all(&output)?;

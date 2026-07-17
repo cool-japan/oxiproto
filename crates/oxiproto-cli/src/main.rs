@@ -90,6 +90,7 @@ mod breaking;
 mod convert;
 mod describe;
 mod doc;
+mod error;
 mod format;
 mod gen;
 mod lint;

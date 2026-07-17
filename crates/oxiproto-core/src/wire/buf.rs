@@ -12,6 +12,18 @@ use super::wire_type::WireType;
 use super::WireError;
 use prost::alloc::vec::Vec;
 
+/// Maximum nesting depth honoured while decoding nested messages and groups.
+///
+/// This is the shared recursion-depth budget threaded through every decode
+/// path (dynamic reflection, generated `OxiMessage::merge`, and `skip_field`
+/// group skipping). Once exceeded, decoding returns
+/// [`WireError::RecursionLimitExceeded`] instead of recursing further, which
+/// prevents a maliciously deep input from overflowing the stack.
+///
+/// The value matches the de-facto protobuf norm (`protobuf`'s
+/// `io::CodedInputStream` default and prost's `RECURSION_LIMIT`).
+pub const MAX_DECODE_DEPTH: u32 = 100;
+
 /// A cursor-based reader for decoding protobuf wire format from a byte slice.
 ///
 /// `DecodeBuffer` maintains an internal position and provides methods to read
@@ -37,12 +49,48 @@ use prost::alloc::vec::Vec;
 pub struct DecodeBuffer<'a> {
     buf: &'a [u8],
     pos: usize,
+    /// Current nesting depth. A top-level buffer created with [`new`](Self::new)
+    /// is at depth `0`; each nested-message payload obtained via
+    /// [`nested`](Self::nested) increments it by one.
+    depth: u32,
 }
 
 impl<'a> DecodeBuffer<'a> {
-    /// Create a new `DecodeBuffer` wrapping the given byte slice.
+    /// Create a new `DecodeBuffer` wrapping the given byte slice at depth `0`.
     pub fn new(buf: &'a [u8]) -> Self {
-        Self { buf, pos: 0 }
+        Self {
+            buf,
+            pos: 0,
+            depth: 0,
+        }
+    }
+
+    /// The current nesting depth of this buffer (see [`MAX_DECODE_DEPTH`]).
+    pub fn depth(&self) -> u32 {
+        self.depth
+    }
+
+    /// Create a child `DecodeBuffer` for a nested-message `payload`, one level
+    /// deeper than `self`.
+    ///
+    /// This is the single choke point through which every decode path descends
+    /// into a nested message, so it enforces the shared recursion budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::RecursionLimitExceeded`] if descending would exceed
+    /// [`MAX_DECODE_DEPTH`], protecting against stack-overflow DoS from deeply
+    /// nested input.
+    pub fn nested(&self, payload: &'a [u8]) -> Result<DecodeBuffer<'a>, WireError> {
+        let depth = self.depth + 1;
+        if depth > MAX_DECODE_DEPTH {
+            return Err(WireError::RecursionLimitExceeded);
+        }
+        Ok(DecodeBuffer {
+            buf: payload,
+            pos: 0,
+            depth,
+        })
     }
 
     /// Returns `true` if all bytes have been consumed.
@@ -178,8 +226,17 @@ impl<'a> DecodeBuffer<'a> {
     /// # Errors
     ///
     /// Returns [`WireError::UnexpectedEof`] if the field extends beyond the
-    /// buffer.
+    /// buffer, or [`WireError::RecursionLimitExceeded`] if a group nests deeper
+    /// than [`MAX_DECODE_DEPTH`].
     pub fn skip_field(&mut self, wire_type: WireType) -> Result<(), WireError> {
+        self.skip_field_at(wire_type, self.depth)
+    }
+
+    /// Depth-tracked implementation of [`skip_field`](Self::skip_field).
+    ///
+    /// Group skipping recurses; `depth` carries the current nesting level so it
+    /// can be bounded by [`MAX_DECODE_DEPTH`] to avoid stack-overflow DoS.
+    fn skip_field_at(&mut self, wire_type: WireType, depth: u32) -> Result<(), WireError> {
         match wire_type {
             WireType::Varint => {
                 let _ = self.read_varint()?;
@@ -191,13 +248,16 @@ impl<'a> DecodeBuffer<'a> {
                 let _ = self.read_length_delimited()?;
             }
             WireType::SGroup => {
+                if depth >= MAX_DECODE_DEPTH {
+                    return Err(WireError::RecursionLimitExceeded);
+                }
                 // Skip fields until we hit the matching EGroup tag.
                 loop {
                     let tag = self.read_tag()?;
                     if tag.wire_type == WireType::EGroup {
                         break;
                     }
-                    self.skip_field(tag.wire_type)?;
+                    self.skip_field_at(tag.wire_type, depth + 1)?;
                 }
             }
             WireType::EGroup => {
@@ -506,6 +566,63 @@ mod tests {
         let buf = EncodeBuffer::with_capacity(100);
         assert!(buf.is_empty());
         assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn skip_field_group_recursion_is_bounded() {
+        // Regression: a pathological stream of group-start (SGroup) tags with no
+        // matching EGroup forces `skip_field` to recurse once per tag. Without a
+        // depth budget this overflows the stack (DoS). The shared budget must
+        // instead abort with `RecursionLimitExceeded`.
+        //
+        // Tag for field 1 with wire type SGroup(3): (1 << 3) | 3 == 0x0B.
+        let data = vec![0x0Bu8; 5000];
+        let mut dec = DecodeBuffer::new(&data);
+        match dec.skip_field(WireType::SGroup) {
+            Err(WireError::RecursionLimitExceeded) => {}
+            other => panic!("expected RecursionLimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skip_field_shallow_group_still_works() {
+        // A well-formed, shallow group must still skip correctly: SGroup, one
+        // inner varint field, then EGroup, followed by a trailing field.
+        let mut enc = EncodeBuffer::new();
+        enc.write_tag(1, WireType::SGroup).expect("sgroup tag");
+        enc.write_tag(2, WireType::Varint).expect("inner tag");
+        enc.write_varint(7);
+        enc.write_tag(1, WireType::EGroup).expect("egroup tag");
+        enc.write_tag(3, WireType::Varint).expect("trailing tag");
+        enc.write_varint(42);
+
+        let mut dec = DecodeBuffer::new(enc.as_bytes());
+        let tag = dec.read_tag().expect("first tag");
+        assert_eq!(tag.wire_type, WireType::SGroup);
+        dec.skip_field(tag.wire_type).expect("skip group");
+        let trailing = dec.read_tag().expect("trailing tag");
+        assert_eq!(trailing.field_number, 3);
+        assert_eq!(dec.read_varint().expect("trailing val"), 42);
+    }
+
+    #[test]
+    fn nested_rejects_beyond_max_depth() {
+        // `nested` must refuse to descend past MAX_DECODE_DEPTH.
+        let data = [0u8; 4];
+        let root = DecodeBuffer::new(&data);
+        assert_eq!(root.depth(), 0);
+
+        // Manually walk the budget: each `nested` step increments depth by one.
+        let mut current = root.nested(&data).expect("depth 1");
+        for _ in 1..MAX_DECODE_DEPTH {
+            current = current.nested(&data).expect("within budget");
+        }
+        assert_eq!(current.depth(), MAX_DECODE_DEPTH);
+        match current.nested(&data) {
+            Err(WireError::RecursionLimitExceeded) => {}
+            Err(other) => panic!("expected RecursionLimitExceeded, got {other:?}"),
+            Ok(_) => panic!("expected RecursionLimitExceeded, got a nested buffer"),
+        }
     }
 
     #[test]
