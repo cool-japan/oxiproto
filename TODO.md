@@ -1,7 +1,7 @@
 # OxiProto Project TODO
 
 ## Status
-v0.1.4 in development. Functional protobuf toolkit (~42,293 SLOC, 1109 tests).
+v0.1.4 released 2026-07-27. Functional protobuf toolkit (~43,339 SLOC, 1135 tests).
 Native Pure-Rust wire format codec lives in `oxiproto-core::wire`
 (varint/zigzag/tag/fixed/length-delimited, DecodeBuffer/EncodeBuffer, UnknownFields).
 Native .proto parser (oxiproto-build, `native-parser` feature, now default) handles
@@ -10,7 +10,10 @@ desugaring. Codegen handles map/oneof/Default/doc-comments/services/JSON/OxiMess
 WKT adds RFC3339, duration strings, Any, FieldMask, Struct, wrappers, chrono/time interop.
 CLI gained describe/encode/decode/format/lint/breaking/doc subcommands. oxiproto-json
 provides canonical Protobuf-JSON mapping. Zero clippy warnings, zero rustdoc warnings,
-no unwrap() in production.
+no unwrap() in production. oxiproto-cli now also ships oxiproto-protoc, a
+protoc-argv-compatible shim so PROTOC-pointing third-party build scripts can skip a C++
+protoc install too; examples/ (oxiproto-examples) has three runnable examples covering
+encode/decode, reflection, and codegen.
 
 ## Milestones
 

@@ -10,6 +10,13 @@ streaming combos), doc comments (correctly indented), `#[deprecated]`,
 package namespacing, reserved fields, custom attributes, WKT mapping,
 `impl OxiMessage for T` / `impl OxiName for T` blocks.
 ~2300 SLOC production code across 4 source files.
+0.1.4 routes generated `merge()` nested-message buffer construction through
+`buf.nested(payload)` instead of `DecodeBuffer::new(payload)`, so generated
+code now shares oxiproto-core's recursion-depth budget (`wire::MAX_DECODE_DEPTH`)
+and rejects over-deep nested input with a decode error instead of risking
+stack overflow; this crate's own `build.rs` fixture compilation also switched
+from shelling out to `protoc` to parsing via `protox`/`compile_fds` in-process.
+90 tests passing (default features) / 93 (all features), 0 failures.
 
 ## Core Implementation
 - [x] Implement map field codegen: `map<K, V>` -> `HashMap<K, V>` or `BTreeMap<K, V>`
@@ -21,6 +28,7 @@ package namespacing, reserved fields, custom attributes, WKT mapping,
   - merge() dispatches on (field_number, wire_type); unknown tags forwarded to _unknown.
   - clear() resets all fields to Default.
   - Files: src/message_impl.rs (new ~1357 SLOC)
+  - **2026-07-27:** `merge()` bodies for message-typed fields (singular, repeated, and map values) now construct nested `DecodeBuffer`s via `buf.nested(payload)` instead of `DecodeBuffer::new(payload)`, so generated decode code participates in oxiproto-core's shared `MAX_DECODE_DEPTH` recursion budget instead of recursing unbounded — closes a stack-overflow DoS from maliciously deep nested-message input.
 - [x] Implement builder pattern generation for each message (optional, feature-gated) (150-200 SLOC) (done 2026-05-29)
   - **Goal:** FooBuilder struct with fluent setters per field and build() -> Foo. Feature-gated via CodegenOptions::emit_builder (default false).
   - **Design:** New src/builder_impl.rs; emit_builder_for_message(msg, type_name, opts, file_package, registry) appended to each message's output when emit_builder=true. Oneof-member fields skipped. Repeated → add_X, map → insert_X, scalar/message → by-value setter.
@@ -87,6 +95,7 @@ package namespacing, reserved fields, custom attributes, WKT mapping,
 - [x] Test OxiName constants correct (NAME, PACKAGE)
 - [x] Fixture proto files: tests/fixtures/{scalars,nested,oneof_map,services}.proto
 - [x] build.rs: prost-build compiles fixture protos for cross-validation infrastructure
+  - **2026-07-27:** Switched from `prost_build::Config::compile_protos` (shells out to a `protoc` executable) to `protox::compile` + `prost_build::Config::compile_fds`, so building this crate's own `tests/fixtures/*.proto` no longer requires `protoc` on PATH — purely internal to how this crate builds/tests itself.
 
 ## Planned / In-Progress
 - [x] Implement namespaced-layout JSON codegen: FQN→Rust-path type registry, cross-package path resolution, `emit_json=true` with `package_namespacing=true` (done 2026-05-29)

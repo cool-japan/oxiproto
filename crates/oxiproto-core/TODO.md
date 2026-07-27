@@ -7,7 +7,11 @@ varint/zigzag/tag/fixed/length-delimited codecs, `DecodeBuffer`/`EncodeBuffer`,
 and `UnknownFields` — ~1900 SLOC including tests. Error type now has
 `WireFormatError`, `From<std::io::Error>`, `#[non_exhaustive]`, and
 `OxiProtoResult<T>`. Goal: build a native `Message` trait on top of the wire
-module to fully replace `prost`.
+module to fully replace `prost`. 0.1.4 adds a shared recursion-depth budget
+(`DecodeBuffer::nested`/`depth`, `wire::MAX_DECODE_DEPTH`) closing a
+stack-overflow DoS on deeply-nested decode input, plus a message-level fuzz
+suite (`tests/fuzz_message_decode.rs`). 341 tests passing (default features) /
+346 (all features).
 
 ## Core Implementation
 - [x] Implement native `WireType` enum: Varint(0), I64(1), Len(2), SGroup(3), EGroup(4), I32(5)
@@ -40,6 +44,11 @@ module to fully replace `prost`.
   - **Tests:** 3-variant enum (int, str, bool); each round-trips; last-write-wins; unknown field_number → Ok(false); encoded_len matches actual.
 - [x] Add `WireFormatError` variant to `OxiProtoError` for decode failures
 - [x] Add `UnexpectedEof`, `InvalidWireType`, `InvalidFieldNumber`, `Overflow` error variants (in `WireError`)
+- [x] Implement a shared recursion-depth budget for nested-message/group decoding (done 2026-07-27)
+  - **Goal:** Close a stack-overflow denial-of-service: decoding a maliciously deeply-nested message or group (thousands of levels) could previously exhaust the stack before ever reaching application code.
+  - **Design:** New public `DecodeBuffer::nested(&self, payload: &[u8]) -> Result<DecodeBuffer, WireError>` is the single choke point every nested-message/group decode path in the workspace now descends through; new public `DecodeBuffer::depth(&self) -> u32` exposes the current nesting level. New public constant `wire::MAX_DECODE_DEPTH: u32 = 100` (matching the de-facto protobuf/prost norm — `protobuf`'s `CodedInputStream` default and prost's `RECURSION_LIMIT`) bounds it; exceeding it returns the new `WireError::RecursionLimitExceeded` variant instead of recursing further. `skip_field`'s internal group-skipping was rewritten as `skip_field_at` to thread depth tracking through its own recursion.
+  - **Files:** `src/wire/buf.rs` (`MAX_DECODE_DEPTH`, `DecodeBuffer::depth`/`nested`, `skip_field_at`); `src/wire/mod.rs` (`WireError::RecursionLimitExceeded`, `MAX_DECODE_DEPTH` re-export).
+  - **Tests:** `skip_field_group_recursion_is_bounded`, `skip_field_shallow_group_still_works`, `nested_rejects_beyond_max_depth` (in `src/wire/buf.rs`); see also the Testing section below for the message-level fuzz suite that exercises this through `OxiMessage::decode`.
 
 ## API Improvements
 - [x] Make `OxiProtoError` implement `From<std::io::Error>` instead of storing `ErrorKind`
@@ -74,6 +83,11 @@ module to fully replace `prost`.
   - **Files:** `tests/fuzz_decode.rs` (new).
   - **Tests:** All proptest cases pass; clippy clean; no `should_panic` (use `Result` assertion).
   - **Risk:** Low. Proptest already a dev-dep.
+- [x] Message-level decode fuzz/property suite (done 2026-07-27)
+  - **Goal:** Fuzz one layer above the low-level buffer primitives (`fuzz_decode.rs`/`fuzz_corpus.rs`): exercise `OxiMessage::decode` itself on a hand-written message shaped like real `oxiproto-codegen` output (nested messages, repeated fields, unknown-field preservation), so the recursion-depth budget and merge()-level decode logic are covered end to end, not just the wire primitives.
+  - **Design:** `tests/fuzz_message_decode.rs` — hand-written `FuzzNode` message (scalar + string + repeated self-nested message + repeated scalar + `UnknownFields`). (1) Decoding arbitrary bytes never panics, only `Ok` or a typed `WireFormatError`. (2) Encode→decode round-trips exactly for arbitrarily-generated valid messages. (3) A seeded-PRNG (xorshift64) bit-flip mutation sweep over valid encodings never panics. (4) A dedicated regression proves deeply self-nested input is rejected via `WireError::RecursionLimitExceeded` rather than overflowing the stack. Proptest-based, no cargo-fuzz/libFuzzer, per COOLJAPAN Pure-Rust policy.
+  - **Files:** `tests/fuzz_message_decode.rs` (new, ~430 SLOC).
+  - **Tests:** `fuzz_decode_arbitrary_bytes_never_panics`, `fuzz_decode_tag_prefixed_bytes_never_panics`, `fuzz_encode_decode_round_trip`, `fuzz_encoded_len_matches_actual`, `fuzz_bit_flip_mutation_never_panics`, `seeded_adversarial_decode_sweep_never_panics`, `deeply_nested_children_rejected_not_overflowed`.
 
 ## Performance
 - [x] Benchmark varint encoding/decoding against prost's implementation (done 2026-05-29)

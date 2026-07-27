@@ -6,6 +6,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "oxiproto-cli",
+    version,
     about = "Compile .proto files to plain Rust structs"
 )]
 struct Cli {

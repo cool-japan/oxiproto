@@ -27,6 +27,14 @@ prost_types, and the native `wire` module from oxiproto-core. Provides a
   - **Files:** crates/oxiproto/src/lib.rs (modify: doc comments with feature-gated examples, trait overview table)
 
 ## Testing
+- [x] Migrate `build.rs` off `prost_build::Config` (shells out to `protoc`) onto `oxiproto_build::Builder` for compiling `tests/fixtures/user.proto` (done 2026-07-27)
+  - **Goal:** Dogfood the crate's own no-protoc build path even for the facade's own integration-test fixture, so the facade — whose whole purpose is removing the `protoc` prerequisite — is not itself required to have `protoc` installed to build.
+  - **Files:** `crates/oxiproto/build.rs` (modify: `prost_build::Config::new()....compile_protos(...)` → `oxiproto_build::Builder::new()....compile(...)`).
+- [x] Add `tests/recursion_dos.rs`: recursion-depth DoS regression for the *generated* (codegen) decode path (done 2026-07-27)
+  - **Goal:** Prove that generated `OxiMessage::merge` output (not just the reflection path exercised in `oxiproto-reflect`) respects the shared `oxiproto-core` decode recursion-depth budget and rejects a deeply nested malicious payload with a decode error instead of overflowing the stack.
+  - **Design:** `build.rs` gained a second step, `emit_dos_fixture`, which generates the `OxiMessage` impl for a self-referential `message RecNested { RecNested child = 1; int32 v = 2; }` (via `oxiproto-codegen`, `emit_oxi_message_impl = true`) into `$OUT_DIR/dos_fixture.rs`; the test `include!()`s it.
+  - **Files:** `crates/oxiproto/build.rs` (+`emit_dos_fixture`), `crates/oxiproto/tests/recursion_dos.rs` (new).
+  - **Tests:** `generated_merge_rejects_deeply_nested_message` (5000-deep input → `OxiProtoError::WireFormatError(WireError::RecursionLimitExceeded)`), `generated_merge_accepts_shallow_nesting` (10-deep input still decodes).
 - [x] Integration test: compile a .proto, OxiMessage encode/decode, wire cross-validate vs prost (done 2026-05-29)
   - **Goal:** End-to-end smoke test gated on all(feature="build",feature="codegen"). Writes user.proto to temp_dir, compiles, generates code string, hand-instantiates User type, encodes via OxiMessage, decodes round-trip, byte cross-validates vs prost.
   - **Design:** crates/oxiproto/build.rs compiles tests/fixtures/user.proto into OUT_DIR. Test include!()s the generated file. Prost-derived reference type for byte cross-validation lives in the test module.

@@ -1,7 +1,7 @@
 # oxiproto-build TODO
 
 ## Status
-Functional build helper: `compile_protos` and `Builder` chain `protox::compile` (Pure Rust .proto parser) to `prost_build::Config::compile_fds` for Rust code generation. `compile_to_fds` exposes raw FileDescriptorSet. No protoc required. ~100 SLOC production code.
+Functional build helper: `compile_protos` and `Builder` chain `protox::compile` (Pure Rust .proto parser) to `prost_build::Config::compile_fds` for Rust code generation. `compile_to_fds` exposes raw FileDescriptorSet. No protoc required. ~100 SLOC production code. 266 tests passing (default features) / 267 (all features).
 
 ## Core Implementation
 - [x] Implement native .proto file lexer (tokenizer for proto2/proto3 syntax) (400-500 SLOC) (planned 2026-05-29)

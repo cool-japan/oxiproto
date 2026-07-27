@@ -13,10 +13,13 @@ The binary installs as `oxiproto-cli` and is `#![forbid(unsafe_code)]`.
 cargo install oxiproto-cli
 ```
 
+This installs two binaries: `oxiproto-cli` itself, and `oxiproto-protoc`, a `protoc`-argv-compatible shim (see the "`oxiproto-protoc`" section below).
+
 Verify:
 
 ```bash
 oxiproto-cli --help
+oxiproto-cli --version
 oxiproto-cli gen --help
 ```
 
@@ -49,6 +52,7 @@ oxiproto-cli breaking --old old/hello.proto --new new/hello.proto
 | `-q`, `--quiet` | Suppress all non-error output |
 | `-v`, `--verbose` | Print verbose progress messages |
 | `-h`, `--help` | Print help |
+| `-V`, `--version` | Print version |
 
 ## Commands
 
@@ -145,9 +149,37 @@ Returns non-zero when any violation is found. Rules include:
 
 Writes a completion script for the given shell to stdout, e.g. `oxiproto-cli completions bash > oxiproto-cli.bash`.
 
+## `oxiproto-protoc` — a drop-in `protoc` replacement
+
+`oxiproto-protoc` is a separate binary, shipped from this same crate, that speaks enough of `protoc`'s command-line surface to stand in for it. Third-party build scripts (`prost-build`, `tonic-build`, and anything built on top of them) shell out to a `protoc` executable purely to turn `.proto` sources into a serialized `FileDescriptorSet`; pointing their `PROTOC` environment variable at `oxiproto-protoc` removes that C++ dependency entirely — for any such project, not only ones already using OxiProto.
+
+```bash
+# Any prost-build / tonic-build based project:
+export PROTOC=$(which oxiproto-protoc)
+cargo build
+```
+
+It also runs standalone, taking the same flags `protoc -o` invocations use:
+
+```bash
+oxiproto-protoc -I proto -o descriptor.bin proto/hello.proto
+```
+
+| Flag | Description |
+|------|-------------|
+| `-I`, `--proto_path <DIR>` | Import search path, in order (repeatable; `-Idir` and `--proto_path=dir` also accepted) |
+| `-o`, `--descriptor_set_out <FILE>` | Where the encoded `FileDescriptorSet` is written (required) |
+| `--include_imports` | Accepted; imports are always included |
+| `--include_source_info` | Accepted; source info is always emitted |
+| `--experimental_allow_proto3_optional` | Accepted and ignored — proto3 field presence is always supported |
+| `--version` | Print `libprotoc`-compatible version information |
+| `-h`, `--help` | Print help |
+
+Only descriptor-set generation is implemented. Code-generation flags (`--cpp_out`, `--python_out`, `--plugin`, etc.) are rejected with an explicit error rather than silently ignored, so a build that genuinely needs a real code-generation plugin fails loudly instead of producing nothing.
+
 ## Exit Status
 
-`0` on success; `1` when a command fails (parse/codegen/I/O error, a detected breaking change, or lint violations). The error message is written to stderr.
+`0` on success; `1` when a command fails (parse/codegen/I/O error, a detected breaking change, or lint violations). The error message is written to stderr. Every subcommand returns a typed `CliError` (`src/error.rs`) internally rather than a type-erased error, so failure causes stay matchable end to end.
 
 ## Related crates
 

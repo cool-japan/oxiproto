@@ -11,14 +11,14 @@ The crate ships **two parallel reflection surfaces**. The default surface is a t
 
 ```toml
 [dependencies]
-oxiproto-reflect = "0.1.3"
+oxiproto-reflect = "0.1.4"
 ```
 
 Or, via the facade:
 
 ```toml
 [dependencies]
-oxiproto = { version = "0.1.3", features = ["reflect"] }
+oxiproto = { version = "0.1.4", features = ["reflect"] }
 ```
 
 ## Quick Start
@@ -119,6 +119,8 @@ A self-contained, Pure-Rust reflection implementation built on `oxiproto_core::w
 | `MapKey` | `NativeMapKey` | Map-key value model for `map<K, V>` fields |
 
 Native `DynamicMessage` field methods include `new`, `descriptor`, `has_field`, `get_field`, `set_field`, `clear_field`, `get_field_by_name`, `set_field_by_name`, `which_oneof`, `iter_fields`, and `unknown_fields` / `unknown_fields_mut`.
+
+`DynamicMessage::decode` descends through `oxiproto-core`'s shared decode recursion-depth budget (`wire::MAX_DECODE_DEPTH`, currently 100) for both nested-message fields and `map<K, V>` entries (a map entry is itself a nested message level), so a maliciously deep chain of nested submessages is rejected with a `ReflectError` instead of overflowing the stack.
 
 ### `ReflectError` variants
 

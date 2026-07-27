@@ -4,8 +4,8 @@
 //!
 //! This crate provides extension traits for the protobuf Well-Known Types
 //! defined in [`prost_types`], enabling conversion to/from standard Rust
-//! time types (and optionally [`chrono`] types when the `chrono` feature is
-//! enabled, or [`time`] types when the `time` feature is enabled).
+//! time types (and optionally `chrono` types when the `chrono` feature is
+//! enabled, or `time` types when the `time` feature is enabled).
 //!
 //! ## Re-exports
 //!
@@ -16,17 +16,8 @@
 //!
 //! | Feature  | Default | Description |
 //! |----------|---------|-------------|
-//! | `chrono` | off     | Adds [`TimestampExt::to_chrono_utc`] / [`from_chrono_utc`] and [`DurationExt::to_chrono_duration`] / [`from_chrono_duration`] methods. |
-//! | `time`   | off     | Adds [`TimestampTimeExt::to_offset_datetime`] / [`from_offset_datetime`] and [`DurationTimeExt::to_time_duration`] / [`from_time_duration`] methods. |
-//!
-//! [`TimestampExt::to_chrono_utc`]: crate::TimestampExt::to_chrono_utc
-//! [`from_chrono_utc`]: crate::TimestampExt::from_chrono_utc
-//! [`DurationExt::to_chrono_duration`]: crate::DurationExt::to_chrono_duration
-//! [`from_chrono_duration`]: crate::DurationExt::from_chrono_duration
-//! [`TimestampTimeExt::to_offset_datetime`]: crate::TimestampTimeExt::to_offset_datetime
-//! [`from_offset_datetime`]: crate::TimestampTimeExt::from_offset_datetime
-//! [`DurationTimeExt::to_time_duration`]: crate::DurationTimeExt::to_time_duration
-//! [`from_time_duration`]: crate::DurationTimeExt::from_time_duration
+//! | `chrono` | off     | Adds `TimestampExt::to_chrono_utc` / `from_chrono_utc` and `DurationExt::to_chrono_duration` / `from_chrono_duration` methods. |
+//! | `time`   | off     | Adds `TimestampTimeExt::to_offset_datetime` / `from_offset_datetime` and `DurationTimeExt::to_time_duration` / `from_time_duration` methods. |
 
 pub mod api_ext;
 pub mod empty;

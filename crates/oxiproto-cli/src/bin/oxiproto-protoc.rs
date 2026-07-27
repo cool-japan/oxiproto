@@ -7,7 +7,7 @@
 //!
 //! Third-party build scripts (`prost-build`, `tonic-build`, and everything
 //! built on them) shell out to a `protoc` executable purely to turn `.proto`
-//! sources into a serialised [`FileDescriptorSet`]; they then do their own
+//! sources into a serialised [`FileDescriptorSet`](prost_types::FileDescriptorSet); they then do their own
 //! codegen from that descriptor set. That single step is the reason a C++
 //! `protoc` install is a hard prerequisite for those crates.
 //!
@@ -293,7 +293,12 @@ mod tests {
 
     #[test]
     fn experimental_proto3_optional_flag_is_accepted() {
-        let inv = parse(&["--experimental_allow_proto3_optional", "-o", "/o", "x.proto"]);
+        let inv = parse(&[
+            "--experimental_allow_proto3_optional",
+            "-o",
+            "/o",
+            "x.proto",
+        ]);
         assert_eq!(inv.protos, vec![PathBuf::from("x.proto")]);
     }
 
@@ -306,7 +311,10 @@ mod tests {
     #[test]
     fn codegen_options_are_rejected_not_ignored() {
         let err = parse_err(&["--cpp_out=/gen", "x.proto"]);
-        assert!(err.contains("--cpp_out"), "error must name the option: {err}");
+        assert!(
+            err.contains("--cpp_out"),
+            "error must name the option: {err}"
+        );
     }
 
     #[test]

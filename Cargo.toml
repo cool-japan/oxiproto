@@ -30,19 +30,19 @@ oxiproto-wkt = { path = "crates/oxiproto-wkt", version = "0.1.4" }
 oxiproto-codegen = { path = "crates/oxiproto-codegen", version = "0.1.4" }
 oxiproto-cli     = { path = "crates/oxiproto-cli", version = "0.1.4" }
 oxiproto-json    = { path = "crates/oxiproto-json", version = "0.1.4" }
-clap             = { version = "4.6.1", features = ["derive"] }
+clap             = { version = "4.6.4", features = ["derive"] }
 prost = { version = "0.14.4", default-features = false }
 prost-build = { version = "0.14.4" }
 prost-types = { version = "0.14.4", default-features = false }
-prost-reflect = { version = "0.16.4", default-features = false, features = ["derive"] }
+prost-reflect = { version = "0.16.5", default-features = false, features = ["derive"] }
 protox = { version = "0.9.1" }
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
-time = { version = "0.3.53", default-features = false, features = ["std"] }
+time = { version = "0.3.54", default-features = false, features = ["std"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0" }
-base64 = { version = "0.22" }
-syn = { version = "2", features = ["full"] }
-prettyplease = { version = "0.2" }
+base64 = { version = "0.23" }
+syn = { version = "3", features = ["full"] }
+prettyplease = { version = "0.3" }
 proptest = { version = "1.11" }
 criterion = { version = "0.8.2" }
 clap_mangen = { version = "0.3" }

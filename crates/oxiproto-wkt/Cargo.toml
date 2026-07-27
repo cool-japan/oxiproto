@@ -7,8 +7,12 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Well-Known Types interop for OxiProto"
+readme = "README.md"
 keywords = ["protobuf", "wkt", "timestamp", "duration"]
 categories = ["encoding", "date-and-time"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = []
