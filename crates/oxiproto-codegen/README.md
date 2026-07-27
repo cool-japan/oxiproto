@@ -11,14 +11,14 @@ This crate is purely a string-in / string-out transform: it does not parse `.pro
 
 ```toml
 [dependencies]
-oxiproto-codegen = "0.1.3"
+oxiproto-codegen = "0.1.4"
 ```
 
 With `rustfmt`-quality formatting of the generated source via `prettyplease`:
 
 ```toml
 [dependencies]
-oxiproto-codegen = { version = "0.1.3", features = ["format"] }
+oxiproto-codegen = { version = "0.1.4", features = ["format"] }
 ```
 
 ## Quick Start
@@ -101,6 +101,8 @@ Construct with `CodegenOptions::new()` (or `Default`). Fields:
 | `emit_text_format` | `bool` | `false` | Emit `to_text_format() -> String` per message |
 
 Helper: `use_btree_map_effective()` → `btree_map || use_btree_map`.
+
+When `emit_oxi_message_impl` is set, generated `merge()` bodies construct nested-message buffers via `buf.nested(payload)` rather than `DecodeBuffer::new(payload)` directly, so decoding generated code automatically participates in `oxiproto-core`'s shared recursion-depth budget (`oxiproto_core::wire::MAX_DECODE_DEPTH`, 100 levels): a maliciously deep chain of nested messages is rejected with a decode error instead of overflowing the stack.
 
 ### `ModuleTree`
 

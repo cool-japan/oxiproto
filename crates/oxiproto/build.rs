@@ -1,8 +1,15 @@
 // Build script for the `oxiproto` facade crate.
 //
-// Compiles `tests/fixtures/user.proto` via `prost-build` so that the
-// integration test can `include!()` the generated code and perform
-// wire-byte cross-validation against the hand-written `OxiMessage` impl.
+// Compiles `tests/fixtures/user.proto` so that the integration test can
+// `include!()` the generated code and perform wire-byte cross-validation
+// against the hand-written `OxiMessage` impl.
+//
+// Uses `oxiproto-build` rather than `prost-build` directly: the latter shells
+// out to a `protoc` executable, which meant this crate — the facade of a
+// project whose whole purpose is removing the `protoc` prerequisite — could not
+// be built without `protoc` installed. Dogfooding our own builder keeps the
+// tree buildable on a bare toolchain and exercises the exact code path
+// downstream users are pointed at.
 
 fn main() {
     let proto_dir = "tests/fixtures";
@@ -14,17 +21,83 @@ fn main() {
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo");
 
-    prost_build::Config::new()
+    // The old `--experimental_allow_proto3_optional` protoc flag has no
+    // equivalent here and needs none: it only ever unlocked proto3 `optional`
+    // on protoc releases older than 3.15, and our parser emits the synthetic
+    // oneofs for proto3 field presence natively.
+    oxiproto_build::Builder::new()
         .out_dir(&out_dir)
-        // Accept proto3 `optional` fields even on older bundled `protoc` (< 3.15).
-        .protoc_arg("--experimental_allow_proto3_optional")
-        .compile_protos(&[proto_file], &[proto_dir])
-        .expect("prost-build failed to compile user.proto");
+        .compile(&[proto_file], &[proto_dir])
+        .expect("oxiproto-build failed to compile user.proto");
+
+    // Recursion-depth DoS regression fixture: emit a self-referential message's
+    // OxiMessage impl via oxiproto-codegen so the regenerated-codegen decode
+    // path can be exercised end-to-end. Always emitted (default features).
+    emit_dos_fixture(&out_dir);
 
     // JSON runtime harness (only when json-runtime-harness feature is active)
     if std::env::var("CARGO_FEATURE_JSON_RUNTIME_HARNESS").is_ok() {
         emit_json_test_fixture();
     }
+}
+
+/// Generate the `OxiMessage` impl for a self-referential `RecNested` message
+/// and write it to `$OUT_DIR/dos_fixture.rs` for `tests/recursion_dos.rs` to
+/// `include!()`. This exercises the *generated* (codegen) decode path against a
+/// deeply nested input.
+fn emit_dos_fixture(out_dir: &str) {
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    fn field(
+        name: &str,
+        number: i32,
+        label: Label,
+        ty: Type,
+        type_name: Option<&str>,
+    ) -> FieldDescriptorProto {
+        FieldDescriptorProto {
+            name: Some(name.to_string()),
+            number: Some(number),
+            label: Some(label as i32),
+            r#type: Some(ty as i32),
+            type_name: type_name.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    // message RecNested { RecNested child = 1; int32 v = 2; }
+    let fds = FileDescriptorSet {
+        file: vec![FileDescriptorProto {
+            name: Some("dos.proto".to_string()),
+            syntax: Some("proto3".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("RecNested".to_string()),
+                field: vec![
+                    field(
+                        "child",
+                        1,
+                        Label::Optional,
+                        Type::Message,
+                        Some(".RecNested"),
+                    ),
+                    field("v", 2, Label::Optional, Type::Int32, None),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+
+    let mut opts = oxiproto_codegen::CodegenOptions::new();
+    opts.emit_oxi_message_impl = true;
+    let code =
+        oxiproto_codegen::generate_with_options(&fds, &opts).expect("dos fixture codegen failed");
+
+    std::fs::write(std::path::Path::new(out_dir).join("dos_fixture.rs"), code)
+        .expect("failed to write dos_fixture.rs");
 }
 
 fn emit_json_test_fixture() {

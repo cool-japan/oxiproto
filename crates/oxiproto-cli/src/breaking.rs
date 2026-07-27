@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use crate::error::CliError;
 use crate::util::Verbosity;
 use clap::Args;
 use std::{collections::HashMap, path::PathBuf};
@@ -30,7 +31,7 @@ pub struct BreakingArgs {
 ///
 /// Returns an error if any proto file is missing, if compilation fails, or if
 /// any breaking change is detected.
-pub fn run(args: BreakingArgs, verbosity: Verbosity) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: BreakingArgs, verbosity: Verbosity) -> Result<(), CliError> {
     // Validate file existence before any compilation.
     for p in &args.old {
         if !p.exists() {

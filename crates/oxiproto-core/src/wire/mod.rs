@@ -25,7 +25,7 @@ pub mod unknown;
 pub mod varint;
 pub mod zigzag;
 
-pub use buf::{DecodeBuffer, EncodeBuffer};
+pub use buf::{DecodeBuffer, EncodeBuffer, MAX_DECODE_DEPTH};
 pub use fixed::{
     decode_double, decode_fixed32, decode_fixed64, decode_float, decode_sfixed32, decode_sfixed64,
     encode_double, encode_fixed32, encode_fixed64, encode_float, encode_sfixed32, encode_sfixed64,
@@ -66,6 +66,10 @@ pub enum WireError {
     OutOfRange(prost::alloc::string::String),
     /// A string field contained invalid UTF-8.
     InvalidUtf8(core::str::Utf8Error),
+    /// Nested-message (or group) decoding exceeded [`DecodeBuffer`]'s recursion
+    /// depth budget ([`MAX_DECODE_DEPTH`]). Guards against stack-overflow DoS
+    /// from maliciously deep input.
+    RecursionLimitExceeded,
 }
 
 impl core::fmt::Display for WireError {
@@ -84,6 +88,9 @@ impl core::fmt::Display for WireError {
             ),
             WireError::OutOfRange(msg) => write!(f, "value out of range: {msg}"),
             WireError::InvalidUtf8(e) => write!(f, "invalid UTF-8: {e}"),
+            WireError::RecursionLimitExceeded => {
+                write!(f, "decode recursion limit exceeded ({MAX_DECODE_DEPTH})")
+            }
         }
     }
 }

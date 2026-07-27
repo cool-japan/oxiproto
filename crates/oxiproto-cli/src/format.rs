@@ -6,6 +6,8 @@
 use clap::Args;
 use std::{collections::HashMap, path::PathBuf};
 
+use crate::error::CliError;
+
 // ---------------------------------------------------------------------------
 // CLI args
 // ---------------------------------------------------------------------------
@@ -34,13 +36,10 @@ pub struct FormatArgs {
 ///
 /// Returns an error if a file is missing, compilation fails, or an in-place
 /// write fails.
-pub fn run(
-    args: FormatArgs,
-    _verbosity: crate::util::Verbosity,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: FormatArgs, _verbosity: crate::util::Verbosity) -> Result<(), CliError> {
     for proto in &args.protos {
         if !proto.exists() {
-            return Err(format!("proto file not found: {}", proto.display()).into());
+            return Err(CliError::NotFound(proto.display().to_string()));
         }
     }
 

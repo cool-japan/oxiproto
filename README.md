@@ -6,13 +6,13 @@ It eliminates the build-time `protoc` (C++) binary that `prost-build` and `tonic
 `PATH`, by routing all `.proto` parsing and descriptor construction through a native pure-Rust
 parser, and by re-exporting the already-pure `prost` runtime as the wire-format engine.
 
-A consumer with `oxiproto = "0.1.3"` in `[build-dependencies]` regenerates protobuf bindings on a
+A consumer with `oxiproto = "0.1.4"` in `[build-dependencies]` regenerates protobuf bindings on a
 stock `rust:slim` container — no `apt-get install protobuf-compiler`, no cross-compile pre-stage,
 no Bazel toolchain.
 
-## Status: v0.1.3 — released 2026-06-19
+## Status: v0.1.4 — released 2026-07-27
 
-**1109 tests passing, zero clippy warnings, zero rustdoc warnings.**
+**1078 tests passing (default features) / 1135 tests passing (all features), zero clippy warnings, zero rustdoc warnings.**
 
 | Milestone | Status |
 |-----------|--------|
@@ -20,7 +20,7 @@ no Bazel toolchain.
 | M1: Build helper (no-protoc compile) | DONE |
 | M2: Reflection + WKT | DONE |
 | M3: Custom codegen (map/oneof/Default/services/docs/JSON/OxiMessage) | DONE |
-| M4: CLI (gen/describe/encode/decode/format/lint/breaking/doc) | DONE |
+| M4: CLI (gen/describe/encode/decode/format/lint/breaking/doc/man/completions) + oxiproto-protoc protoc-compatible shim | DONE |
 | M5: JSON codec (oxiproto-json) | DONE |
 | Phase 1: Native wire format in oxiproto-core::wire | DONE |
 | Phase 2: Native .proto parser (native-parser feature, default) | DONE (multi-file, proto2+3) |
@@ -40,6 +40,7 @@ no Bazel toolchain.
 | `oxiproto-codegen` | Generate plain Rust structs/enums/OxiMessage impls from `FileDescriptorSet` |
 | `oxiproto-cli` | CLI: gen, describe, encode, decode, format, lint, breaking, doc subcommands |
 | `oxiproto-json` | Canonical Protobuf-JSON mapping (camelCase, base64 bytes, RFC3339 timestamps) |
+| `oxiproto-examples` | Runnable examples (`examples/`, not published): encode_decode, reflection, codegen_usage |
 
 ## Quick Start
 
@@ -47,10 +48,10 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxiproto = "0.1.3"
+oxiproto = "0.1.4"
 
 [build-dependencies]
-oxiproto-build = "0.1.3"
+oxiproto-build = "0.1.4"
 ```
 
 In `build.rs`:
@@ -119,6 +120,24 @@ oxiproto-cli encode --schema proto/my.proto --message my.Foo '{"name": "hello"}'
 oxiproto-cli decode --schema proto/my.proto --message my.Foo bytes.bin
 ```
 
+## `oxiproto-protoc` — drop-in `protoc` replacement for *other* tools
+
+`oxiproto-cli` ships a second binary, `oxiproto-protoc`, that speaks the same argv surface
+`protoc` uses for descriptor-set generation. Point any `prost-build` / `tonic-build`-based
+project's `PROTOC` environment variable at it and that project's `.proto` compilation runs
+through OxiProto's native pure-Rust parser instead of a C++ `protoc` install — no code
+changes needed on their end:
+
+```sh
+PROTOC=$(which oxiproto-protoc) cargo build
+```
+
+It implements exactly the descriptor-set-generating subset of `protoc` (`-I`/`--proto_path`,
+`-o`/`--descriptor_set_out`, `--include_imports`, `--include_source_info`,
+`--experimental_allow_proto3_optional`, `--version`, `--help`); language code-generation
+flags (`--cpp_out`, `--plugin`, ...) are rejected with a clear error rather than silently
+ignored.
+
 ## Features
 
 | Feature | Default | Description |
@@ -151,11 +170,14 @@ It is depended on by: **OxiRPC** (gRPC), and any future crate using proto wire e
 - `protox` (pure Rust) used as fallback when `native-parser` feature is off
 - Native parser (`oxiproto-build`) handles proto2 + proto3, multi-file import resolution,
   source_code_info, custom options, and group desugaring
+- OxiProto's own build scripts (`oxiproto`, `oxiproto-codegen`) no longer shell out to
+  `protoc` even indirectly — they call `protox`/`oxiproto-build` directly instead of
+  `prost-build::compile_protos`
 
 ## Implementation Statistics
 
-- ~42,293 lines of Rust code (142 source files)
-- 1109 tests (nextest), 0 failures
+- 43,339 lines of Rust code (149 source files)
+- 1078 tests (nextest, default features) / 1135 tests (nextest, all features), 0 failures
 - 0 clippy warnings (`-D warnings`, all features)
 - 0 rustdoc warnings (`-D warnings`, all features)
 - MSRV: Rust 1.89 (edition 2021)

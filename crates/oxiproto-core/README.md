@@ -11,21 +11,21 @@ It contains no code generation (that lives in `oxiproto-codegen`), no `build.rs`
 
 ```toml
 [dependencies]
-oxiproto-core = "0.1.3"
+oxiproto-core = "0.1.4"
 ```
 
 `no_std` (relying on `alloc`):
 
 ```toml
 [dependencies]
-oxiproto-core = { version = "0.1.3", default-features = false, features = ["alloc"] }
+oxiproto-core = { version = "0.1.4", default-features = false, features = ["alloc"] }
 ```
 
 With Serde derives on the wire helper types:
 
 ```toml
 [dependencies]
-oxiproto-core = { version = "0.1.3", features = ["serde"] }
+oxiproto-core = { version = "0.1.4", features = ["serde"] }
 ```
 
 ## Quick Start
@@ -194,7 +194,11 @@ Methods: `WireType::from_u32(u32) -> Result<Self, WireError>`, `value(self) -> u
 | `read_float()` / `read_double()` | `f32` / `f64` | IEEE-754 little-endian |
 | `read_length_delimited()` | `&[u8]` | Length-prefixed payload (borrowed) |
 | `read_string()` | `&str` | UTF-8 length-delimited (validates UTF-8) |
-| `skip_field(wire_type)` | `()` | Advance past a field (handles nested groups) |
+| `depth()` | `u32` | Current nesting depth (`0` at the top level) |
+| `nested(payload)` | `Result<DecodeBuffer, WireError>` | Create a child buffer for a nested-message payload, one level deeper — the shared choke point every nested-message/group decode path descends through |
+| `skip_field(wire_type)` | `()` | Advance past a field (handles nested groups, bounded by the same recursion-depth budget as `nested`) |
+
+`DecodeBuffer` carries a shared recursion-depth budget through every nested-message and group decode path (`nested()`, and internally through `skip_field`'s group-skipping). Descending past `wire::MAX_DECODE_DEPTH` (100, matching the de-facto protobuf/prost norm) returns `WireError::RecursionLimitExceeded` instead of recursing further, closing a stack-overflow denial-of-service on maliciously deeply-nested input — this is the single depth budget every nested-message/group decode path in the workspace goes through.
 
 #### `EncodeBuffer` — append-only writer
 
@@ -261,6 +265,7 @@ Stack-wide error enum (`#[non_exhaustive]`); implements `Display` + `core::error
 | `TruncatedMessage { declared, available }` | Length prefix exceeded the available bytes |
 | `OutOfRange(String)` | Decoded value out of range for the target type |
 | `InvalidUtf8(Utf8Error)` | String field was not valid UTF-8 |
+| `RecursionLimitExceeded` | Nested-message/group decoding exceeded the shared recursion-depth budget (`wire::MAX_DECODE_DEPTH`, 100) |
 
 ## Related crates
 

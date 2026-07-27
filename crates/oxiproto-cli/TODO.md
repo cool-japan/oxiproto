@@ -6,8 +6,17 @@ CLI binary with `gen`, `describe`, `encode`, and `decode` subcommands.
 `describe` prints a human-readable type summary. `encode`/`decode` convert
 between canonical Protobuf-JSON and binary wire format using oxiproto-reflect +
 oxiproto-json (reads stdin / writes stdout when files omitted). ~300 SLOC.
+Also ships a second binary, `oxiproto-protoc` — a `protoc`-argv-compatible
+descriptor-set-generation shim usable by any `prost-build`/`tonic-build`
+project via `PROTOC=oxiproto-protoc` (see README).
 
 ## Core Implementation
+- [x] Add `oxiproto-protoc` binary: a `protoc`-argv-compatible descriptor-set-generation shim (done 2026-07-27)
+  - **Goal:** Let ANY `prost-build` / `tonic-build`-based project (not just OxiProto users) point its `PROTOC` environment variable at a pure-Rust binary and skip installing a C++ `protoc`. Implements exactly the descriptor-set-generation subset of `protoc`'s CLI, backed by `oxiproto_build::compile_to_fds`.
+  - **Design:** New `[[bin]]` target `src/bin/oxiproto-protoc.rs` in the same crate/package as `oxiproto-cli` (a separate binary rather than a subcommand, since `PROTOC` is invoked as a bare executable carrying protoc's own argv with no room for a subcommand word). Hand-rolled argv parser (`parse_args`) accepts both split (`-I dir`) and attached (`-Idir`, `--proto_path=dir`) spellings for `-I`/`--proto_path` and `-o`/`--descriptor_set_out`; `--include_imports`, `--include_source_info`, and `--experimental_allow_proto3_optional` are accepted as no-ops (the native parser's output already behaves as if all three were always on); `--version` prints a `libprotoc <ver> (oxiproto-protoc <ver> shim)` line; any other `-`-prefixed flag (i.e. any code-generation flag like `--cpp_out`/`--plugin`) is rejected with an explicit error instead of being silently ignored.
+  - **Files:** `crates/oxiproto-cli/src/bin/oxiproto-protoc.rs` (new, ~330 SLOC incl. tests), `crates/oxiproto-cli/Cargo.toml` (+`[[bin]]` entry).
+  - **Tests:** 8 unit tests in-file covering the exact prost-build 0.14 invocation shape, attached/`=`-form flags, include-path order preservation, the proto3-optional no-op flag, `--` positional-only separator, codegen-flag rejection (error names the rejected flag), missing-value errors, and that `--proto_pathfoo` is not misparsed as an attached value.
+  - **Risk:** Low — pure argv parsing plus a direct call into the already-tested `oxiproto_build::compile_to_fds`. Verified manually end-to-end (compiles a `.proto` to a `FileDescriptorSet`; rejects `--cpp_out` with a clear error).
 - [x] Add `format` subcommand: format/prettify .proto files with canonical style (done 2026-05-30)
 - [x] Add `lint` subcommand: style/convention checks on .proto files (Google style guide, buf-compatible rules) (done 2026-05-30)
 - [x] Add `breaking` subcommand: detect breaking changes between two versions of .proto files (200-300 SLOC) (done 2026-05-29)
@@ -52,6 +61,12 @@ oxiproto-json (reads stdin / writes stdout when files omitted). ~300 SLOC.
   - **Tests:** Single input with package declaration → correct filename; single input without → stem; multiple inputs → per-stem; ambiguous → error.
 
 ## API Improvements
+- [x] Replace `Box<dyn std::error::Error>` with a typed `CliError` enum across every subcommand (done 2026-07-27)
+  - **Goal:** `gen`, `describe`, `doc`, `format`, `lint`, `man`, `breaking`, and `convert` (encode/decode) all previously returned a type-erased boxed error; callers (tests, or the CLI embedded as a library) could only match on `Display` output. A typed enum keeps failure causes matchable end to end.
+  - **Design:** New `CliError` enum (`NotFound`, `Build`, `Codegen`, `Reflect`, `Json`, `SerdeJson`, `Decode`, `Io`, `Message`) implementing `Display` + `std::error::Error` (with `source()`), plus `From` impls for every underlying error type it wraps (`oxiproto_core::OxiProtoError`, `oxiproto_codegen::CodegenError`, `oxiproto_reflect::ReflectError`, `oxiproto_json::JsonError`, `serde_json::Error`, `prost::DecodeError`, `std::io::Error`, `String`, `&str`) so call sites keep using `?`.
+  - **Files:** `crates/oxiproto-cli/src/error.rs` (new), `crates/oxiproto-cli/src/main.rs` (+`mod error`), every subcommand module's `run(...)` signature (now `Result<(), CliError>`).
+  - **Tests:** `src/error.rs` unit tests (`display_not_found`, `display_message`, `from_io_error_has_source`, `from_oxiproto_core_error`).
+- [x] Fix `oxiproto-cli --version` / `-V` (done 2026-07-27) — previously rejected as an unrecognized argument because the top-level `#[command(...)]` never opted into clap's `version`; the derive attribute now includes `version`, so `--version` / `-V` prints `oxiproto-cli <crate-version>`.
 - [x] Add colored terminal output for error/progress messages (planned 2026-05-29)
   - **Goal:** Use anstyle (pure Rust, already transitively in clap's tree) for red errors and cyan verbose progress.
   - **Files:** crates/oxiproto-cli/src/util.rs (new ~80 SLOC); Cargo.toml (add anstyle, check if already transitive)

@@ -232,6 +232,77 @@ fn byte_exact_nested_message() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Recursion-depth DoS regression (deeply nested self-referential message)
+// ---------------------------------------------------------------------------
+
+/// Append `value` to `out` as a base-128 varint.
+fn push_varint(mut value: u64, out: &mut Vec<u8>) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+/// Build the wire bytes for `depth` levels of `message R { R child = 1; }`,
+/// nested inside-out. Field 1 (message) has LEN tag `(1 << 3) | 2 == 0x0A`.
+fn deeply_nested_r(depth: usize) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        next.push(0x0A);
+        push_varint(buf.len() as u64, &mut next);
+        next.extend_from_slice(&buf);
+        buf = next;
+    }
+    buf
+}
+
+fn self_referential_pool() -> DescriptorPool {
+    // message R { R child = 1; }
+    let fds = proto3_file(vec![DescriptorProto {
+        name: Some("R".to_owned()),
+        field: vec![field(
+            "child",
+            1,
+            Label::Optional,
+            Type::Message,
+            Some(".R"),
+        )],
+        ..Default::default()
+    }]);
+    DescriptorPool::from_file_descriptor_set(fds).expect("self-referential pool builds")
+}
+
+#[test]
+fn deeply_nested_message_decode_is_bounded() {
+    // Regression: thousands of nested submessages must return a decode error
+    // (recursion-limit) rather than overflowing the stack.
+    let pool = self_referential_pool();
+    let r = pool.get_message_by_name("R").expect("R");
+    let bytes = deeply_nested_r(5000);
+    match DynamicMessage::decode(r, &bytes) {
+        Err(oxiproto_reflect::ReflectError::Field(_)) => {}
+        other => panic!("expected a bounded decode error, got {other:?}"),
+    }
+}
+
+#[test]
+fn moderately_nested_message_decode_succeeds() {
+    // A legitimately nested message (well within the budget) must still decode.
+    let pool = self_referential_pool();
+    let r = pool.get_message_by_name("R").expect("R");
+    let bytes = deeply_nested_r(10);
+    DynamicMessage::decode(r, &bytes).expect("shallow nesting decodes");
+}
+
 #[test]
 fn byte_exact_map_string_int32() {
     let pool = map_pool();

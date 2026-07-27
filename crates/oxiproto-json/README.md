@@ -25,14 +25,14 @@ The mapping is driven entirely by a message's runtime descriptor, so no generate
 
 ```toml
 [dependencies]
-oxiproto-json = "0.1.3"
+oxiproto-json = "0.1.4"
 ```
 
 Or, via the facade:
 
 ```toml
 [dependencies]
-oxiproto = { version = "0.1.3", features = ["json", "reflect"] }
+oxiproto = { version = "0.1.4", features = ["json", "reflect"] }
 ```
 
 ## Quick Start

@@ -11,6 +11,9 @@ and `StructExt` for Struct/Value, `ListValueExt`, `FieldMaskExt`, `EmptyExt`,
 for ordering. RFC 3339 uses a pure-Rust calendar algorithm. ~900 SLOC production code.
 Criterion benchmarks in `benches/wkt.rs` cover Timestamp/Any/Struct performance.
 oxiproto-json now delegates all WKT formatting to oxiproto-wkt traits (2026-06-03).
+No functional changes in 0.1.4. 107 tests passing (default features) / 136
+(all features), 0 failures — the gap is the chrono/time interop suites, which
+only compile under those optional (off-by-default) features.
 
 ## Core Implementation
 - [x] Implement `AnyExt` trait: pack(message) -> Any, unpack<T>(any) -> T, type_url validation

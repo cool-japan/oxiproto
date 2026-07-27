@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-07-27
+
+### Added
+- **`oxiproto-protoc`** — new `protoc`-argv-compatible binary (`oxiproto-cli/src/bin/oxiproto-protoc.rs`) implementing the descriptor-set-generation subset of `protoc` (`-I`/`-o`/`--include_imports`/`--include_source_info`) backed by OxiProto's pure-Rust parser. Pointing the `PROTOC` environment variable at it lets third-party build scripts (`prost-build`, `tonic-build`, and anything built on them) compile `.proto` sources without a C++ `protoc` installation.
+- New `oxiproto-examples` workspace member (`examples/`) with three runnable examples: `encode_decode` (hand-written `OxiMessage` impl and wire-format round-trip), `reflection` (`DynamicMessage` / `DescriptorPool` usage), and `codegen_usage` (in-process `.proto` → Rust codegen)
+- `DecodeBuffer::nested()` / `DecodeBuffer::depth()` and `oxiproto_core::wire::MAX_DECODE_DEPTH` — public API for the shared decode recursion-depth budget
+- `oxiproto-core/tests/fuzz_message_decode.rs` — message-level property/fuzz suite covering arbitrary-bytes-never-panics, encode/decode round-trips, a seeded bit-flip mutation sweep, and the recursion-limit regression
+- `CliError` typed error enum (`oxiproto-cli/src/error.rs`) covering every `oxiproto-cli` subcommand failure cause
+- `CONTRIBUTING.md` and `SECURITY.md` project governance docs
+
+### Changed
+- All `oxiproto-cli` subcommands (`gen`, `describe`, `doc`, `format`, `lint`, `man`, `breaking`, `convert`) now return the typed `CliError` instead of `Box<dyn std::error::Error>`
+- `oxiproto-codegen` and `oxiproto` crate build scripts no longer shell out to `protoc` via `prost-build::compile_protos`: `oxiproto-codegen/build.rs` now parses its test fixtures with `protox` and generates via `compile_fds`, and `oxiproto/build.rs` now compiles via `oxiproto-build::Builder` directly, removing the workspace's last internal dependency on a C++ `protoc` executable
+- Dependencies updated to latest: `prost` / `prost-build` / `prost-types` 0.14.3 → 0.14.4, `prost-reflect` 0.16.4 → 0.16.5, `chrono` 0.4.44 → 0.4.45, `time` 0.3.47 → 0.3.54, `clap` 4.6.1 → 4.6.4, `proptest` 1.6 → 1.11, `base64` 0.22 → 0.23, `syn` 2 → 3, `prettyplease` 0.2 → 0.3 (the latter three are major-version bumps; the workspace was verified to build, lint, and test clean against them)
+- Every publishable crate's `Cargo.toml` now declares `readme = "README.md"` so crates.io renders each crate's existing README
+- All workspace crates bumped from `0.1.3` to `0.1.4`
+
+### Fixed
+- `oxiproto-cli --version` / `-V` now works (previously rejected as an unrecognized argument); it reports the CLI's own crate version
+- Broken rustdoc intra-doc link in the new `oxiproto-protoc` binary's crate-level docs
+
+### Security
+- Fixed unbounded-recursion stack-overflow denial-of-service across all three nested-message decode paths: native reflection (`DynamicMessage::decode` in `oxiproto-reflect`), group-skipping (`DecodeBuffer::skip_field` in `oxiproto-core`), and codegen-generated `OxiMessage::merge` (`oxiproto-codegen`). A maliciously deep nested-message or group payload could previously exhaust the stack before ever reaching application code. All three paths now descend through the shared `DecodeBuffer::nested()` depth budget (`MAX_DECODE_DEPTH = 100`, matching the `protobuf`/`prost` norm) and return `WireError::RecursionLimitExceeded` once exceeded.
+
+---
+
 ## [0.1.3] - 2026-06-19
 
 ### Changed
@@ -61,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial 0.1.0 release.
 
+[0.1.4]: https://github.com/cool-japan/oxiproto/releases/tag/v0.1.4
 [0.1.3]: https://github.com/cool-japan/oxiproto/releases/tag/v0.1.3
 [0.1.2]: https://github.com/cool-japan/oxiproto/releases/tag/v0.1.2
 [0.1.1]: https://github.com/cool-japan/oxiproto/releases/tag/v0.1.1

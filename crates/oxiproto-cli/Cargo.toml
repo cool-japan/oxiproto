@@ -7,12 +7,23 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description     = "OxiProto CLI: compile .proto files to plain Rust structs without protoc"
+readme          = "README.md"
 keywords        = ["protobuf", "codegen", "cli", "protoc"]
 categories      = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "oxiproto-cli"
 path = "src/main.rs"
+
+# protoc-argv-compatible descriptor-set generator. Third-party build scripts
+# (prost-build, tonic-build, ...) shell out to `protoc` only to produce a
+# FileDescriptorSet; pointing `PROTOC` at this binary removes their dependency
+# on a C++ protoc install. It is a separate binary rather than an
+# `oxiproto-cli` subcommand precisely because `PROTOC` is invoked as a bare
+# executable carrying protoc's own argv, with no room for a subcommand word.
+[[bin]]
+name = "oxiproto-protoc"
+path = "src/bin/oxiproto-protoc.rs"
 
 [features]
 default = []
@@ -21,6 +32,7 @@ default = []
 anstyle          = "1"
 clap             = { workspace = true }
 clap_complete    = "4"
+oxiproto-core    = { workspace = true }
 oxiproto-build   = { workspace = true, features = ["native-parser"] }
 prost-build      = { workspace = true }
 oxiproto-codegen = { workspace = true }

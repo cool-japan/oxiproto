@@ -3,6 +3,7 @@
 use clap::Args;
 use std::path::PathBuf;
 
+use crate::error::CliError;
 use crate::util::Verbosity;
 
 /// Arguments for the `describe` subcommand.
@@ -23,11 +24,11 @@ pub struct DescribeArgs {
 /// # Errors
 ///
 /// Returns an error if any proto file is missing or parsing fails.
-pub fn run(args: DescribeArgs, verbosity: Verbosity) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: DescribeArgs, verbosity: Verbosity) -> Result<(), CliError> {
     let _ = verbosity; // reserved for future verbose progress messages
     for proto in &args.protos {
         if !proto.exists() {
-            return Err(format!("proto file not found: {}", proto.display()).into());
+            return Err(CliError::NotFound(proto.display().to_string()));
         }
     }
 

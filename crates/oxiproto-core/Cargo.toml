@@ -7,6 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Pure Rust protobuf core types"
+readme = "README.md"
 keywords = ["protobuf", "prost"]
 categories = ["encoding", "data-structures"]
 

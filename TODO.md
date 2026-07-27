@@ -1,7 +1,7 @@
 # OxiProto Project TODO
 
 ## Status
-v0.1.3 released 2026-06-19. Functional protobuf toolkit (~42,293 SLOC, 1109 tests).
+v0.1.4 released 2026-07-27. Functional protobuf toolkit (~43,339 SLOC, 1135 tests).
 Native Pure-Rust wire format codec lives in `oxiproto-core::wire`
 (varint/zigzag/tag/fixed/length-delimited, DecodeBuffer/EncodeBuffer, UnknownFields).
 Native .proto parser (oxiproto-build, `native-parser` feature, now default) handles
@@ -10,7 +10,10 @@ desugaring. Codegen handles map/oneof/Default/doc-comments/services/JSON/OxiMess
 WKT adds RFC3339, duration strings, Any, FieldMask, Struct, wrappers, chrono/time interop.
 CLI gained describe/encode/decode/format/lint/breaking/doc subcommands. oxiproto-json
 provides canonical Protobuf-JSON mapping. Zero clippy warnings, zero rustdoc warnings,
-no unwrap() in production.
+no unwrap() in production. oxiproto-cli now also ships oxiproto-protoc, a
+protoc-argv-compatible shim so PROTOC-pointing third-party build scripts can skip a C++
+protoc install too; examples/ (oxiproto-examples) has three runnable examples covering
+encode/decode, reflection, and codegen.
 
 ## Milestones
 
@@ -121,3 +124,22 @@ no unwrap() in production.
 - **Benchmark native .proto parsing vs protox** (follow-up /ultra, depends on Phase 2 native-parser being default).
 - **Custom/extension option values** (follow-up /ultra): applying `unknown`/extension-typed option values (protobuf message-typed custom options) to descriptors. Currently only well-known options applied.
 - **protox replacement** (follow-up /ultra): rewire `Builder::compile`, `compile_str`, `compile_protos` off protox once source_code_info, proto2, and custom options close the fidelity gap.
+
+
+---
+
+<!-- production-readiness-backlog 2026-07-16 -->
+## Production-Readiness Backlog — 2026-07-16
+
+_Consolidated from static audit + Opus adversarial bug-hunt (48 verified defects across noffi) + baseline nextest/clippy + design investigation. See `../NOFFI_PRODUCTION_BACKLOG.md` for the full cross-project list and severity/model legend. Not implemented; no commits._
+
+**Confirmed bugs — Opus-verified (unbounded recursion → stack-overflow DoS):**
+- [x] **S · critical** `oxiproto-reflect/src/native/wire_codec.rs:177` — `DynamicMessage::decode` recurses into nested messages with no depth limit. R2/N0 — fixed via shared `DecodeBuffer::nested()` depth budget (`MAX_DECODE_DEPTH`); regression test in `crates/oxiproto/tests/recursion_dos.rs`.
+- [x] **S · critical** `oxiproto-core/src/wire/buf.rs:193` — `DecodeBuffer::skip_field` recurses on SGroup with no depth limit (reachable from every generated decoder's unknown-field path). R2/N0 — fixed via `skip_field_at` depth tracking, returns `WireError::RecursionLimitExceeded`.
+- [x] **S · high** `oxiproto-codegen/src/message_impl.rs:867` — generated `OxiMessage::merge` nested-message decode recurses with no depth guard. R2/N0 — generated code now routes through `buf.nested(..)`, inheriting the same shared budget.
+- Fix: shared recursion-depth budget (protobuf norm: 100) across all three decode paths; return DecodeError. DONE.
+**Designed / audit:**
+- [x] **A/med · P1** examples (empty dir) populated: `examples/encode_decode.rs`, `examples/reflection.rs`, `examples/codegen_usage.rs` (new `oxiproto-examples` workspace member, `cargo run --example <name> -p oxiproto-examples`).
+- [x] **A/med · P1** CLI typed errors: `oxiproto-cli` now returns `crate::error::CliError` (typed enum wrapping `OxiProtoError`/`CodegenError`/`ReflectError`/`JsonError`/`serde_json::Error`/`prost::DecodeError`/`io::Error`) end-to-end instead of `Box<dyn std::error::Error>`.
+- [x] **A/med · P1** wire fuzz: `crates/oxiproto-core/tests/fuzz_message_decode.rs` — OxiMessage-level arbitrary-bytes-never-panic proptest, encode→decode round-trip proptest, bit-flip mutation proptest, and a seeded-PRNG (xorshift64) adversarial sweep, plus a hand-written-`OxiMessage` recursion-limit regression.
+- [ ] **A/med · P1** Edition 2023 (~300 SLOC) — **BLOCKED (external), not merely deferred**: the upstream protobuf Editions feature-resolution spec (`features.proto`, field-presence/repeated-encoding/message-encoding/enum-type/json-format feature defaults) has not been finalized by the protobuf working group as of this writing. `oxiproto-build` already recognizes the `edition = "2023";` statement and parses it (see `crates/oxiproto-build/TODO.md`: `Token::Edition`, `Edition` enum, `parse_edition_statement`, conflict detection) using a **proto3-approximation** of semantics (no required fields, synthetic oneofs for `optional`) — that is preview-quality syntax acceptance, not the full Editions feature-resolution mechanism Phase 6 targets. Full Phase 6 work is intentionally on hold until the upstream spec stabilizes; not in scope for the examples/CLI-errors/wire-fuzz pass regardless.

@@ -7,6 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Canonical Protobuf-JSON mapping for OxiProto (camelCase, base64 bytes, RFC3339 timestamps)"
+readme = "README.md"
 keywords = ["protobuf", "json", "prost", "serialization"]
 categories = ["encoding"]
 

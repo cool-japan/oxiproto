@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use crate::error::CliError;
 use crate::util::Verbosity;
 use clap::Args;
 use std::{collections::HashMap, io::Write as _, path::PathBuf};
@@ -30,11 +31,11 @@ type LocationMap = HashMap<Vec<i32>, String>;
 ///
 /// Returns an error if any proto file is missing, compilation fails, or the
 /// output file cannot be written.
-pub fn run(args: DocArgs, verbosity: Verbosity) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: DocArgs, verbosity: Verbosity) -> Result<(), CliError> {
     // Validate file existence before any compilation.
     for p in &args.protos {
         if !p.exists() {
-            return Err(format!("proto file not found: {}", p.display()).into());
+            return Err(CliError::NotFound(p.display().to_string()));
         }
     }
 
