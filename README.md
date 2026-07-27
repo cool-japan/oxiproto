@@ -129,7 +129,17 @@ through OxiProto's native pure-Rust parser instead of a C++ `protoc` install —
 changes needed on their end:
 
 ```sh
+cargo install oxiproto-cli   # installs oxiproto-cli and oxiproto-protoc
+
 PROTOC=$(which oxiproto-protoc) cargo build
+```
+
+On Windows — where a missing `protoc` bites hardest, since there is no package
+manager install that just works:
+
+```powershell
+$env:PROTOC = "$env:USERPROFILE\.cargo\bin\oxiproto-protoc.exe"
+cargo build
 ```
 
 It implements exactly the descriptor-set-generating subset of `protoc` (`-I`/`--proto_path`,
