@@ -1,7 +1,7 @@
 # OxiProto Project TODO
 
 ## Status
-v0.1.4 released 2026-07-27. Functional protobuf toolkit (~43,339 SLOC, 1135 tests).
+v0.1.5 released 2026-07-27. Functional protobuf toolkit (~43,339 SLOC, 1135 tests).
 Native Pure-Rust wire format codec lives in `oxiproto-core::wire`
 (varint/zigzag/tag/fixed/length-delimited, DecodeBuffer/EncodeBuffer, UnknownFields).
 Native .proto parser (oxiproto-build, `native-parser` feature, now default) handles
