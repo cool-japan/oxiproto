@@ -44,7 +44,10 @@ workspace = true
 optional = true
 
 [build-dependencies]
-prost-build.workspace = true
+# `.proto` → Rust for the test fixture, via our own pure-Rust builder rather
+# than prost-build (which would put a `protoc` executable back on the critical
+# path for building this crate). See build.rs.
+oxiproto-build.workspace = true
 prost-types.workspace = true
 oxiproto-codegen.workspace = true
 

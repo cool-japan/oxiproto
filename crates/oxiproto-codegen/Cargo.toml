@@ -40,6 +40,10 @@ workspace = true
 
 [build-dependencies]
 prost-build.workspace = true
+# Pure-Rust `.proto` parsing for build.rs, so generating the test fixtures does
+# not require a `protoc` executable on PATH. See build.rs for why this is protox
+# and not the sibling oxiproto-build.
+protox.workspace = true
 
 [[bench]]
 name = "codegen"

@@ -1,8 +1,15 @@
 // Build script for the `oxiproto` facade crate.
 //
-// Compiles `tests/fixtures/user.proto` via `prost-build` so that the
-// integration test can `include!()` the generated code and perform
-// wire-byte cross-validation against the hand-written `OxiMessage` impl.
+// Compiles `tests/fixtures/user.proto` so that the integration test can
+// `include!()` the generated code and perform wire-byte cross-validation
+// against the hand-written `OxiMessage` impl.
+//
+// Uses `oxiproto-build` rather than `prost-build` directly: the latter shells
+// out to a `protoc` executable, which meant this crate — the facade of a
+// project whose whole purpose is removing the `protoc` prerequisite — could not
+// be built without `protoc` installed. Dogfooding our own builder keeps the
+// tree buildable on a bare toolchain and exercises the exact code path
+// downstream users are pointed at.
 
 fn main() {
     let proto_dir = "tests/fixtures";
@@ -14,12 +21,14 @@ fn main() {
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo");
 
-    prost_build::Config::new()
+    // The old `--experimental_allow_proto3_optional` protoc flag has no
+    // equivalent here and needs none: it only ever unlocked proto3 `optional`
+    // on protoc releases older than 3.15, and our parser emits the synthetic
+    // oneofs for proto3 field presence natively.
+    oxiproto_build::Builder::new()
         .out_dir(&out_dir)
-        // Accept proto3 `optional` fields even on older bundled `protoc` (< 3.15).
-        .protoc_arg("--experimental_allow_proto3_optional")
-        .compile_protos(&[proto_file], &[proto_dir])
-        .expect("prost-build failed to compile user.proto");
+        .compile(&[proto_file], &[proto_dir])
+        .expect("oxiproto-build failed to compile user.proto");
 
     // Recursion-depth DoS regression fixture: emit a self-referential message's
     // OxiMessage impl via oxiproto-codegen so the regenerated-codegen decode
