@@ -70,6 +70,13 @@ pub enum WireError {
     /// depth budget ([`MAX_DECODE_DEPTH`]). Guards against stack-overflow DoS
     /// from maliciously deep input.
     RecursionLimitExceeded,
+    /// A start-group (wire type 3) field was not closed by a matching
+    /// end-group (wire type 4) tag with the same field number: either the input
+    /// ended first, or an end-group for a different field number was seen.
+    MalformedGroup {
+        /// The field number of the unterminated start-group.
+        field_number: u32,
+    },
 }
 
 impl core::fmt::Display for WireError {
@@ -91,6 +98,11 @@ impl core::fmt::Display for WireError {
             WireError::RecursionLimitExceeded => {
                 write!(f, "decode recursion limit exceeded ({MAX_DECODE_DEPTH})")
             }
+            WireError::MalformedGroup { field_number } => write!(
+                f,
+                "malformed group: start-group for field {field_number} was not \
+                 closed by a matching end-group tag"
+            ),
         }
     }
 }

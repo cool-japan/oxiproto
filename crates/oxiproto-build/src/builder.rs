@@ -27,6 +27,10 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+/// The `syntax` sentinel a `FileDescriptorProto` carries when its source used an
+/// `edition` statement instead of a `syntax` statement.
+const EDITIONS_SYNTAX: &str = "editions";
+
 /// Boxed service-generator closure type alias.
 type ServiceGeneratorFn = Box<dyn Fn(&prost_types::ServiceDescriptorProto) -> String + Send + Sync>;
 
@@ -391,6 +395,21 @@ impl Builder {
             }
         }
 
+        // Protobuf Editions files cannot go through prost-build: its code
+        // generator matches on the `syntax` string and *panics* on the
+        // `"editions"` sentinel (`prost-build/src/code_generator/syntax.rs`:
+        // "unknown syntax: editions"). Route them to the native generator
+        // instead, which understands the resolved feature set; without that
+        // generator compiled in there is nothing that can consume the file, so
+        // say so rather than letting a dependency panic the build script.
+        if fds
+            .file
+            .iter()
+            .any(|f| f.syntax.as_deref() == Some(EDITIONS_SYNTAX))
+        {
+            return self.compile_editions(fds);
+        }
+
         // Generate Rust code via prost-build.
         // Clone the FDS first if we need it for native codegen afterwards.
         #[cfg(feature = "native-codegen")]
@@ -486,6 +505,70 @@ impl Builder {
     ///
     /// Returns [`BuildError::Parse`] if the parser cannot parse or resolve the
     /// proto sources.
+    /// Generate code for a Protobuf Editions descriptor set.
+    ///
+    /// Emits one `{package}.rs` per proto package via `oxiproto-codegen`
+    /// (structs plus `OxiMessage`/`OxiName` impls), which is the only generator
+    /// in the pipeline that understands `TYPE_GROUP` fields and the resolved
+    /// `features.*` options an edition file produces.
+    #[cfg(feature = "native-codegen")]
+    fn compile_editions(self, fds: prost_types::FileDescriptorSet) -> Result<(), BuildError> {
+        let effective_out_dir: PathBuf = match &self.out_dir {
+            Some(d) => d.clone(),
+            None => std::env::var_os("OUT_DIR")
+                .ok_or_else(|| BuildError::Codegen {
+                    message: "OUT_DIR is not set and no out_dir was configured".to_owned(),
+                })
+                .map(PathBuf::from)?,
+        };
+
+        let opts = oxiproto_codegen::CodegenOptions {
+            emit_oxi_message_impl: true,
+            package_namespacing: false,
+            ..oxiproto_codegen::CodegenOptions::default()
+        };
+
+        let mut pkg_contents: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for file in &fds.file {
+            let pkg = file.package.as_deref().unwrap_or("").to_string();
+            let single_fds = prost_types::FileDescriptorSet {
+                file: vec![file.clone()],
+            };
+            let code =
+                oxiproto_codegen::generate_with_options(&single_fds, &opts).map_err(|e| {
+                    BuildError::Codegen {
+                        message: format!("edition codegen failed: {e}"),
+                    }
+                })?;
+            if !code.trim().is_empty() {
+                pkg_contents.entry(pkg).or_default().push_str(&code);
+            }
+        }
+
+        for (pkg, content) in &pkg_contents {
+            let stem = if pkg.is_empty() { "_" } else { pkg };
+            std::fs::write(
+                effective_out_dir.join(format!("{stem}.rs")),
+                content.as_bytes(),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Editions files need the native generator; without it there is nothing
+    /// that can consume them.
+    #[cfg(not(feature = "native-codegen"))]
+    fn compile_editions(self, _fds: prost_types::FileDescriptorSet) -> Result<(), BuildError> {
+        Err(BuildError::Codegen {
+            message: "Protobuf Editions (edition = \"2023\") sources require oxiproto-build's \
+                      `native-codegen` feature: the prost-build backend rejects the \
+                      `syntax = \"editions\"` sentinel. Enable `oxiproto-build/native-codegen`, \
+                      or use `compile_to_fds` + `oxiproto_codegen::generate_with_options`."
+                .to_owned(),
+        })
+    }
+
     pub fn compile_to_fds(
         self,
         protos: &[impl AsRef<Path>],

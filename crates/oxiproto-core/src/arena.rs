@@ -29,8 +29,20 @@
 //!    individual entries.
 //!
 //! 4. **[`ArenaDecoder`]** — a convenience wrapper combining an [`ArenaVec`]
-//!    for elements and a [`BytesArena`] for sub-slices, used by generated code
-//!    when the `arena` feature is active.
+//!    for elements and a [`BytesArena`] for sub-slices.
+//!
+//! # Status: standalone utility, not (yet) wired into codegen
+//!
+//! Every type in this module is independently tested, `#![forbid(unsafe_code)]`
+//! public API that application code can use directly today (see the examples
+//! below). However, **`oxiproto-codegen` does not currently emit any calls
+//! into this module** — generated `OxiMessage::merge` implementations decode
+//! `repeated` fields into plain `Vec`s unconditionally. There is no `arena`
+//! Cargo feature on `oxiproto-core`; the module is always compiled in behind
+//! the crate's ordinary `std`/`alloc` features, not gated separately. Wiring
+//! it into codegen — behind an opt-in feature, with benchmarks demonstrating
+//! a real win over the default `Vec`-based decode path — is a potential
+//! future enhancement, not a shipped capability.
 //!
 //! # Example — ArenaVec
 //!
@@ -500,9 +512,11 @@ impl<'a> ExactSizeIterator for BytesArenaIter<'a> {}
 /// A combined decode context pairing an element slab ([`ArenaVec`]) with a
 /// bytes store ([`BytesArena`]).
 ///
-/// Generated code for `repeated bytes` / `repeated message` fields can use
-/// this instead of a plain `Vec`, significantly reducing per-element allocation
-/// overhead in hot decode paths.
+/// A hand-written `repeated bytes` / `repeated message` decode loop can use
+/// this instead of a plain `Vec`, reducing per-element allocation overhead in
+/// hot decode paths. **`oxiproto-codegen` does not currently construct this
+/// type** (see the [`self`]-module docs) — generated `OxiMessage::merge`
+/// implementations decode into plain `Vec`s.
 ///
 /// `ArenaDecoder<T>` is generic over the element type `T`. For `repeated bytes`
 /// fields, `T` would be `BytesHandle`; for `repeated message` fields, `T` would

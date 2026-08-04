@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::descriptor::{Cardinality, FieldDescriptor, Kind, MessageDescriptor};
-use super::dynamic::{is_field_value_default, DynamicMessage};
+use super::dynamic::DynamicMessage;
 use super::value::{MapKey, Value};
 // Note: base64 and serde_json are workspace dependencies available unconditionally.
 
@@ -41,6 +41,17 @@ pub enum JsonError {
     Schema(String),
     /// An enum value name could not be resolved.
     UnknownEnumValue(String),
+    /// A `string` field held bytes that are not valid UTF-8.
+    ///
+    /// Only reachable when the field's resolved `features.utf8_validation` is
+    /// `NONE`, which lets such a payload survive the wire decode. The canonical
+    /// Protobuf-JSON mapping has no representation for it: JSON strings are
+    /// Unicode by definition, so the conversion is refused rather than losing
+    /// bytes to a replacement character.
+    NonUtf8String {
+        /// The name of the offending field.
+        field: String,
+    },
 }
 
 impl std::fmt::Display for JsonError {
@@ -49,6 +60,11 @@ impl std::fmt::Display for JsonError {
             JsonError::InvalidJson(e) => write!(f, "invalid JSON: {e}"),
             JsonError::Schema(s) => write!(f, "schema mismatch: {s}"),
             JsonError::UnknownEnumValue(s) => write!(f, "unknown enum value: {s}"),
+            JsonError::NonUtf8String { field } => write!(
+                f,
+                "field '{field}' holds a string that is not valid UTF-8 \
+                 (features.utf8_validation = NONE); it has no canonical JSON form"
+            ),
         }
     }
 }
@@ -131,11 +147,12 @@ fn encode_message(msg: &DynamicMessage) -> Result<serde_json::Value, JsonError> 
     let desc = msg.descriptor();
 
     for field in desc.fields() {
-        let value = msg.get_field(&field);
-        // Omit proto3 default-valued singular fields.
-        if is_field_value_default(&field, &value) {
+        // Unset fields, and set-but-default fields without presence, are
+        // omitted; a proto2 / edition-EXPLICIT field set to its default is not.
+        if !msg.should_serialize(&field) {
             continue;
         }
+        let value = msg.get_field(&field);
         let json_value = encode_field_value(&value, &field)?;
         map.insert(field.json_name().to_owned(), json_value);
     }
@@ -211,6 +228,9 @@ fn encode_singular(value: &Value, field: &FieldDescriptor) -> Result<serde_json:
         Value::U64(v) => Ok(serde_json::Value::String(v.to_string())),
         Value::Bool(v) => Ok(serde_json::Value::Bool(*v)),
         Value::String(s) => Ok(serde_json::Value::String(s.clone())),
+        Value::UnvalidatedString(_) => Err(JsonError::NonUtf8String {
+            field: field.name().to_owned(),
+        }),
         Value::Bytes(b) => encode_bytes(b),
         Value::EnumNumber(n) => encode_enum_number(*n, field),
         Value::Message(m) => encode_message(m),
@@ -418,7 +438,9 @@ fn decode_singular(json: &serde_json::Value, field: &FieldDescriptor) -> Result<
         Kind::String => decode_string_val(json),
         Kind::Bytes => decode_bytes_val(json),
         Kind::Enum(_) => decode_enum(json, field),
-        Kind::Message(msg_index) => {
+        // A proto2 group is structurally a synthetic message; it maps to a
+        // JSON object exactly like a `message` field.
+        Kind::Message(msg_index) | Kind::Group(msg_index) => {
             if json.is_null() {
                 let msg_desc = MessageDescriptor {
                     pool: Arc::clone(&field.pool),
@@ -432,9 +454,6 @@ fn decode_singular(json: &serde_json::Value, field: &FieldDescriptor) -> Result<
             };
             Ok(Value::Message(Box::new(decode_message(msg_desc, json)?)))
         }
-        Kind::Group(_) => Err(JsonError::Schema(
-            "group fields are not supported in JSON".to_owned(),
-        )),
     }
 }
 

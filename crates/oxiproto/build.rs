@@ -35,6 +35,12 @@ fn main() {
     // path can be exercised end-to-end. Always emitted (default features).
     emit_dos_fixture(&out_dir);
 
+    // Protobuf Editions + proto2 group fixture: generated `OxiMessage` impls
+    // for a `edition = "2023"` schema exercising DELIMITED message encoding and
+    // EXPANDED repeated encoding, plus a proto2 `group`. `tests/editions.rs`
+    // `include!()`s it and round-trips real wire bytes.
+    emit_editions_fixture(&out_dir);
+
     // JSON runtime harness (only when json-runtime-harness feature is active)
     if std::env::var("CARGO_FEATURE_JSON_RUNTIME_HARNESS").is_ok() {
         emit_json_test_fixture();
@@ -98,6 +104,82 @@ fn emit_dos_fixture(out_dir: &str) {
 
     std::fs::write(std::path::Path::new(out_dir).join("dos_fixture.rs"), code)
         .expect("failed to write dos_fixture.rs");
+}
+
+/// Generate `OxiMessage` impls for an Editions schema and a proto2 `group`
+/// schema, writing them to `$OUT_DIR/editions_fixture.rs`.
+///
+/// Both sources go through the *native* parser so that feature resolution
+/// (`features.message_encoding`, `features.repeated_field_encoding`) is what
+/// decides the emitted wire format — the generated code is then checked against
+/// hand-computed bytes by `tests/editions.rs`.
+fn emit_editions_fixture(out_dir: &str) {
+    const EDITION_SRC: &str = r#"edition = "2023";
+package edfix;
+
+message Inner {
+  int32 x = 1;
+}
+
+message Outer {
+  Inner delim = 1 [features.message_encoding = DELIMITED];
+  Inner framed = 2;
+  repeated int32 expanded = 3 [features.repeated_field_encoding = EXPANDED];
+  repeated int32 packed = 4;
+}
+
+message DefaultPacking {
+  repeated int32 vals = 1;
+}
+"#;
+
+    const PROTO2_GROUP_SRC: &str = r#"syntax = "proto2";
+package p2fix;
+
+message WithGroup {
+  optional int32 lead = 1;
+  optional group Sub = 2 {
+    optional int32 y = 1;
+  }
+}
+
+message DefaultPacking {
+  repeated int32 vals = 1;
+  repeated int32 forced = 2 [packed = true];
+  repeated fixed64 wide = 3;
+  repeated double reals = 4;
+}
+"#;
+
+    const PROTO3_PACKING_SRC: &str = r#"syntax = "proto3";
+package p3fix;
+
+message DefaultPacking {
+  repeated int32 vals = 1;
+  repeated int32 expanded = 2 [packed = false];
+}
+"#;
+
+    let mut code = String::new();
+    for (src, module) in [
+        (EDITION_SRC, "edfix"),
+        (PROTO2_GROUP_SRC, "p2fix"),
+        (PROTO3_PACKING_SRC, "p3fix"),
+    ] {
+        let fds =
+            oxiproto_build::compile_str_native(src).expect("editions fixture source must compile");
+        let mut opts = oxiproto_codegen::CodegenOptions::new();
+        opts.emit_oxi_message_impl = true;
+        let generated = oxiproto_codegen::generate_with_options(&fds, &opts)
+            .expect("editions fixture codegen failed");
+        code.push_str(&format!("pub mod {module} {{\n{generated}\n}}\n"));
+    }
+
+    std::fs::write(
+        std::path::Path::new(out_dir).join("editions_fixture.rs"),
+        code,
+    )
+    .expect("failed to write editions_fixture.rs");
 }
 
 fn emit_json_test_fixture() {

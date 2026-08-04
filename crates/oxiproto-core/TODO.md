@@ -106,8 +106,9 @@ suite (`tests/fuzz_message_decode.rs`). 341 tests passing (default features) /
   - **Files:** `src/wire/alloc_profile.rs` (new, ~540 SLOC); `src/wire/mod.rs` (added `pub mod alloc_profile`); `src/lib.rs` (no change — accessed via `wire::alloc_profile`).
 - [x] Consider arena allocation for repeated message fields (done 2026-06-03)
   - **Goal:** Reduce per-entry heap allocation for `repeated bytes` / `repeated string` / `repeated message` fields in hot decode paths.
-  - **Design:** `src/arena.rs` — `ArenaVec<T>` (slab-sized pre-allocation, avoids 2× doubling), `StringPool` (intern/dedup for repeated string fields, O(unique) memory), `BytesArena` (contiguous slab + handle table for repeated bytes fields, O(1) retrieval), `ArenaDecoder<T>` (combined element + bytes store for generated code). All pure Rust, no_std+alloc compatible. 36 tests.
+  - **Design:** `src/arena.rs` — `ArenaVec<T>` (slab-sized pre-allocation, avoids 2× doubling), `StringPool` (intern/dedup for repeated string fields, O(unique) memory), `BytesArena` (contiguous slab + handle table for repeated bytes fields, O(1) retrieval), `ArenaDecoder<T>` (combined element + bytes store, designed for use by generated code). All pure Rust, no_std+alloc compatible. 36 tests.
   - **Files:** `src/arena.rs` (new, ~570 SLOC); `src/lib.rs` (added `pub mod arena`).
+  - **Status note (2026-08-03):** these types are complete, tested, standalone public API, but `oxiproto-codegen` does not (yet) construct any of them — generated `OxiMessage::merge` implementations decode `repeated` fields into plain `Vec`s regardless. "Done" above means the allocator module itself, not its integration into codegen; see `src/arena.rs`'s module docs for the corrected status.
 
 ## Integration
 - [x] Ensure oxiproto-build generates code that uses native Message trait instead of prost::Message

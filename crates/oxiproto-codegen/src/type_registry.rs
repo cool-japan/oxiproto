@@ -15,6 +15,10 @@ use crate::wkt_map::wkt_rust_type;
 pub(crate) struct TypeRegistry {
     /// All known FQNs with leading dot, e.g. `.foo.bar.MyMsg`.
     fqns: HashSet<String>,
+    /// Every declared package, with a leading dot (`".foo.bar"`). The empty
+    /// package is represented by `""`. Needed to tell where a package path ends
+    /// and the (possibly nested) type path begins.
+    packages: HashSet<String>,
     package_namespacing: bool,
 }
 
@@ -23,6 +27,7 @@ impl TypeRegistry {
     /// (with leading dot).
     pub fn build(fds: &FileDescriptorSet, package_namespacing: bool) -> Self {
         let mut fqns = HashSet::new();
+        let mut packages = HashSet::new();
         for file in &fds.file {
             let pkg = file.package.as_deref().unwrap_or("");
             let prefix = if pkg.is_empty() {
@@ -37,11 +42,41 @@ impl TypeRegistry {
                 let name = en.name.as_deref().unwrap_or("");
                 fqns.insert(format!("{}.{}", prefix, name));
             }
+            packages.insert(prefix);
         }
         Self {
             fqns,
+            packages,
             package_namespacing,
         }
+    }
+
+    /// The Rust identifier a known type is emitted under in *flat* layout.
+    ///
+    /// `emit_message` flattens nesting by joining the ancestor names with `_`
+    /// (`message Outer { message Inner {} }` → `struct Outer_Inner`), so a
+    /// reference to `.pkg.Outer.Inner` has to resolve to `Outer_Inner`, not to
+    /// the bare last component. Groups make this path unavoidable: a `group`
+    /// always synthesises a nested message.
+    fn flat_name(&self, normalized: &str) -> Option<String> {
+        let dotted = format!(".{normalized}");
+        if !self.fqns.contains(&dotted) {
+            return None;
+        }
+        // Longest matching package prefix wins (`.a` vs `.a.b` for `.a.b.C`).
+        let pkg = self
+            .packages
+            .iter()
+            .filter(|p| {
+                p.is_empty()
+                    || (dotted.starts_with(p.as_str()) && dotted[p.len()..].starts_with('.'))
+            })
+            .max_by_key(|p| p.len())?;
+        let rest = dotted[pkg.len()..].trim_start_matches('.');
+        if rest.is_empty() {
+            return None;
+        }
+        Some(rest.replace('.', "_"))
     }
 
     /// Resolve a proto FQN (may have leading dot) to a Rust path, relative to
@@ -59,8 +94,12 @@ impl TypeRegistry {
 
         let target_name = last_component(target_fqn);
 
-        // Flat layout or unknown type: just the bare type name.
-        if !self.package_namespacing || !self.fqns.contains(&format!(".{}", normalized)) {
+        // Flat layout: the type is emitted as `Ancestor_..._Name`.
+        if !self.package_namespacing {
+            return self.flat_name(normalized).unwrap_or(target_name);
+        }
+        // Unknown type under namespaced layout: fall back to the bare name.
+        if !self.fqns.contains(&format!(".{}", normalized)) {
             return target_name;
         }
 

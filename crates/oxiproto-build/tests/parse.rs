@@ -910,21 +910,24 @@ message Hello {
     assert_eq!(msg.fields.len(), 2);
 }
 
-/// Edition 2023 supports `optional` keyword (explicit field presence).
+/// Edition 2023 removed the `optional` keyword — explicit presence is the
+/// default and is otherwise selected with `features.field_presence`.
 #[test]
-fn test_edition_2023_optional_field() {
+fn test_edition_2023_rejects_optional_keyword() {
     let src = r#"edition = "2023";
 message Msg {
   optional string name = 1;
   int32 count = 2;
 }
 "#;
-    let f = parse_file(src).expect("must parse");
-    assert_eq!(f.edition, Some(Edition::Edition2023));
-    let msg = &f.messages[0];
-    assert_eq!(msg.fields.len(), 2);
-    assert_eq!(msg.fields[0].label, FieldLabel::Optional);
-    assert_eq!(msg.fields[1].label, FieldLabel::Singular);
+    let err = parse_file(src).expect_err("'optional' must be rejected in an edition file");
+    assert!(matches!(
+        err,
+        ParseError::EditionSyntaxNotAllowed {
+            construct: "the 'optional' label",
+            ..
+        }
+    ));
 }
 
 /// Edition 2023 supports `repeated` fields.
@@ -1138,4 +1141,145 @@ message Empty {}
     assert_eq!(f.edition, Some(Edition::Edition2023));
     // The `Edition::syntax_sentinel()` should be "editions"
     assert_eq!(Edition::syntax_sentinel(), "editions");
+}
+
+// ---------------------------------------------------------------------------
+// Recursion-depth regression tests
+//
+// Before the nesting budget was added, `parse_message` / `parse_group_field`
+// (mutually recursive) and `parse_option_value` (nested message literals)
+// recursed once per `{` with no bound, so a few hundred KB of `.proto` text
+// such as `message M{message M{message M{...}}}` overflowed the parser stack
+// and aborted the process. This is reachable from every CLI subcommand that
+// reads a user-supplied path and from build scripts consuming third-party
+// proto bundles.
+// ---------------------------------------------------------------------------
+
+/// The nesting budget enforced by the parser (mirrors
+/// `oxiproto_build::parser::parse::MAX_NESTING_DEPTH`).
+const NESTING_LIMIT: u32 = 100;
+
+fn assert_nesting_limit(src: &str) {
+    match parse_file(src).expect_err("deeply nested source must be rejected") {
+        ParseError::NestingLimitExceeded { limit, .. } => {
+            assert_eq!(limit, NESTING_LIMIT, "unexpected reported limit");
+        }
+        other => panic!("expected NestingLimitExceeded, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_deeply_nested_messages_are_rejected() {
+    const LEVELS: usize = 50_000;
+    let mut src = String::from("syntax = \"proto3\";\n");
+    for _ in 0..LEVELS {
+        src.push_str("message M{");
+    }
+    for _ in 0..LEVELS {
+        src.push('}');
+    }
+    assert_nesting_limit(&src);
+}
+
+#[test]
+fn test_deeply_nested_groups_are_rejected() {
+    const LEVELS: usize = 50_000;
+    let mut src = String::from("syntax = \"proto2\";\nmessage Outer{\n");
+    for _ in 0..LEVELS {
+        src.push_str("group G = 1 {");
+    }
+    for _ in 0..LEVELS {
+        src.push('}');
+    }
+    src.push('}');
+    assert_nesting_limit(&src);
+}
+
+#[test]
+fn test_alternating_message_and_group_nesting_shares_one_budget() {
+    // Two independent counters would let this chain reach 2x the limit before
+    // erroring; a single shared budget stops it at the limit.
+    const PAIRS: usize = 25_000;
+    let mut src = String::from("syntax = \"proto2\";\n");
+    for _ in 0..PAIRS {
+        src.push_str("message M{group G = 1 {");
+    }
+    for _ in 0..(PAIRS * 2) {
+        src.push('}');
+    }
+    assert_nesting_limit(&src);
+}
+
+#[test]
+fn test_deeply_nested_option_message_literals_are_rejected() {
+    const LEVELS: usize = 50_000;
+    let mut src = String::from("syntax = \"proto3\";\noption (custom) = ");
+    for _ in 0..LEVELS {
+        src.push_str("{ f: ");
+    }
+    src.push('1');
+    for _ in 0..LEVELS {
+        src.push_str(" }");
+    }
+    src.push_str(";\n");
+    assert_nesting_limit(&src);
+}
+
+#[test]
+fn test_nesting_just_below_the_limit_still_parses() {
+    // `LEVELS` nested `message` bodies puts the innermost one at depth
+    // `LEVELS - 1`, which must stay inside the budget.
+    let levels = NESTING_LIMIT as usize;
+    let mut src = String::from("syntax = \"proto3\";\n");
+    for i in 0..levels {
+        src.push_str(&format!("message M{i}{{"));
+    }
+    src.push_str("int32 x = 1;");
+    for _ in 0..levels {
+        src.push('}');
+    }
+    let file = parse_file(&src).expect("nesting just below the limit must parse");
+    // Walk down to the innermost message and check the field survived.
+    let mut cur = file.messages.first().expect("top-level message");
+    for _ in 1..levels {
+        cur = cur.nested_messages.first().expect("nested message");
+    }
+    assert_eq!(cur.fields.len(), 1);
+    assert_eq!(cur.fields[0].name, "x");
+}
+
+#[test]
+fn test_sibling_messages_do_not_exhaust_the_nesting_budget() {
+    // 5_000 siblings at depth 1: a parser-wide counter that is incremented but
+    // never decremented would reject this; a by-value depth accepts it.
+    const SIBLINGS: usize = 5_000;
+    let mut src = String::from("syntax = \"proto3\";\nmessage Outer{\n");
+    for i in 0..SIBLINGS {
+        src.push_str(&format!("message S{i}{{int32 x = 1;}}\n"));
+    }
+    src.push_str("}\n");
+    let file = parse_file(&src).expect("siblings must not exhaust the budget");
+    assert_eq!(
+        file.messages
+            .first()
+            .expect("outer message")
+            .nested_messages
+            .len(),
+        SIBLINGS
+    );
+}
+
+#[test]
+fn test_sibling_option_message_literals_do_not_exhaust_the_budget() {
+    const SIBLINGS: usize = 2_000;
+    let mut src = String::from("syntax = \"proto3\";\noption (custom) = {");
+    for i in 0..SIBLINGS {
+        src.push_str(&format!("f{i}: {{ g: 1 }} "));
+    }
+    src.push_str("};\n");
+    let file = parse_file(&src).expect("sibling literals must not exhaust the budget");
+    match &file.options.first().expect("option").value {
+        OptionValue::MessageLiteral(pairs) => assert_eq!(pairs.len(), SIBLINGS),
+        other => panic!("expected MessageLiteral, got {other:?}"),
+    }
 }

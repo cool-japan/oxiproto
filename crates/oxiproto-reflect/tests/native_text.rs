@@ -578,3 +578,134 @@ fn round_trip_nested_message() {
         panic!("expected nested message");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Recursion-depth regression tests
+//
+// Before the depth budget was added, `DynamicMessage::from_text` recursed
+// once per `{` (or `<`) with no bound, so a payload such as
+// `nested{nested{nested{...}}}` overflowed the stack and aborted the process.
+// The encoder was symmetric: `encode_message` recursed per nesting level.
+// ---------------------------------------------------------------------------
+
+/// Build `nested { nested { ... id: 1 ... } }` with `levels` sub-messages.
+fn deep_brace_text(levels: usize) -> String {
+    let mut s = String::with_capacity(levels * 10 + 16);
+    for _ in 0..levels {
+        s.push_str("nested {");
+    }
+    s.push_str(" id: 1 ");
+    for _ in 0..levels {
+        s.push('}');
+    }
+    s
+}
+
+/// Build `nested < nested < ... > >` with `levels` sub-messages.
+fn deep_angle_text(levels: usize) -> String {
+    let mut s = String::with_capacity(levels * 10 + 16);
+    for _ in 0..levels {
+        s.push_str("nested <");
+    }
+    s.push_str(" id: 1 ");
+    for _ in 0..levels {
+        s.push('>');
+    }
+    s
+}
+
+#[test]
+fn from_text_rejects_deeply_nested_braces() {
+    let pool = make_pool();
+    let desc = pool.get_message_by_name("Msg").expect("Msg");
+    // 50_000 levels: guaranteed stack overflow before the fix.
+    let text = deep_brace_text(50_000);
+    let err = DynamicMessage::from_text(desc, &text).expect_err("must reject");
+    assert!(
+        matches!(
+            err,
+            oxiproto_reflect::native::text::TextError::RecursionLimitExceeded { limit }
+                if limit == oxiproto_reflect::native::text::MAX_TEXT_DEPTH
+        ),
+        "expected RecursionLimitExceeded, got: {err}"
+    );
+}
+
+#[test]
+fn from_text_rejects_deeply_nested_angle_brackets() {
+    let pool = make_pool();
+    let desc = pool.get_message_by_name("Msg").expect("Msg");
+    let text = deep_angle_text(50_000);
+    let err = DynamicMessage::from_text(desc, &text).expect_err("must reject");
+    assert!(
+        matches!(
+            err,
+            oxiproto_reflect::native::text::TextError::RecursionLimitExceeded { .. }
+        ),
+        "expected RecursionLimitExceeded, got: {err}"
+    );
+}
+
+#[test]
+fn from_text_accepts_nesting_just_below_the_limit() {
+    let pool = make_pool();
+    let desc = pool.get_message_by_name("Msg").expect("Msg");
+    let limit = oxiproto_reflect::native::text::MAX_TEXT_DEPTH as usize;
+    // `limit - 1` sub-messages puts the innermost message at depth `limit - 1`.
+    let text = deep_brace_text(limit - 1);
+    let msg = DynamicMessage::from_text(desc, &text).expect("just below the limit must parse");
+    // Walk down and confirm the innermost `id: 1` survived.
+    let mut cur = msg;
+    for _ in 0..(limit - 1) {
+        let f = cur.descriptor().get_field(10).expect("nested field");
+        let next = match cur.get_field(&f).as_ref() {
+            Value::Message(inner) => (**inner).clone(),
+            other => panic!("expected nested message, got {other:?}"),
+        };
+        cur = next;
+    }
+    let id_f = cur.descriptor().get_field(1).expect("id");
+    assert_eq!(*cur.get_field(&id_f), Value::I32(1));
+}
+
+#[test]
+fn from_text_depth_budget_is_not_consumed_by_siblings() {
+    let pool = make_pool();
+    let desc = pool.get_message_by_name("Msg").expect("Msg");
+    // 5_000 *sibling* sub-messages at depth 1 — a per-parser counter that is
+    // never decremented would reject this; a by-value depth accepts it.
+    let mut text = String::new();
+    for _ in 0..5_000 {
+        text.push_str("nested { id: 1 }\n");
+    }
+    let msg = DynamicMessage::from_text(desc, &text).expect("siblings must not exhaust the budget");
+    let f = msg.descriptor().get_field(10).expect("nested field");
+    assert!(matches!(msg.get_field(&f).as_ref(), Value::Message(_)));
+}
+
+#[test]
+fn to_text_rejects_over_deep_message() {
+    let pool = make_pool();
+    let desc = pool.get_message_by_name("Msg").expect("Msg");
+    let nested_field = desc.get_field(10).expect("field 10");
+    let id_field = desc.get_field(1).expect("field 1");
+
+    // Build a chain 120 levels deep (well past the limit, but shallow enough
+    // that the recursive `Drop` at end of test is safe).
+    let mut cur = DynamicMessage::new(desc.clone());
+    cur.set_field(&id_field, Value::I32(1));
+    for _ in 0..120 {
+        let mut parent = DynamicMessage::new(desc.clone());
+        parent.set_field(&nested_field, Value::Message(Box::new(cur)));
+        cur = parent;
+    }
+
+    let err = cur.to_text().expect_err("must reject over-deep message");
+    assert!(
+        matches!(
+            err,
+            oxiproto_reflect::native::text::TextError::RecursionLimitExceeded { .. }
+        ),
+        "expected RecursionLimitExceeded, got: {err}"
+    );
+}

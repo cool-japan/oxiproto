@@ -1577,37 +1577,44 @@ message Hello {
         assert_eq!(fdp.message_type[0].name.as_deref(), Some("Hello"));
     }
 
-    /// Edition 2023 `optional` field gets a synthetic oneof (same as proto3 optional).
+    /// Edition 2023 removed the `optional` label: presence is a feature now, so
+    /// writing `optional` must be a hard error rather than a proto3 look-alike.
     #[test]
-    fn edition_2023_optional_gets_synthetic_oneof() {
+    fn edition_2023_rejects_optional_label() {
         let src = r#"edition = "2023";
 message Msg {
   optional string name = 1;
   int32 id = 2;
 }
 "#;
+        let err = compile_str_native(src).expect_err("'optional' is not an edition construct");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("'optional' label") && rendered.contains("features.field_presence"),
+            "error must name the removed construct and its replacement, got: {rendered}"
+        );
+    }
+
+    /// Edition 2023 fields have explicit presence by default, expressed as a
+    /// plain `LABEL_OPTIONAL` with no synthetic oneof (exactly what protoc
+    /// emits — the synthetic-oneof trick is a proto3-only encoding).
+    #[test]
+    fn edition_2023_default_presence_is_explicit_without_synthetic_oneof() {
+        let src = r#"edition = "2023";
+message Msg {
+  string name = 1;
+}
+"#;
         let fds = compile_str_native(src).expect("must compile");
         let msg = &fds.file[0].message_type[0];
-        // `optional` in edition 2023 → synthetic oneof + proto3_optional=true
-        let opt_field = msg
-            .field
-            .iter()
-            .find(|f| f.name.as_deref() == Some("name"))
-            .expect("name field");
+        let f = &msg.field[0];
         assert_eq!(
-            opt_field.proto3_optional,
-            Some(true),
-            "Edition 2023 optional field must have proto3_optional = true"
+            f.label,
+            Some(prost_types::field_descriptor_proto::Label::Optional as i32)
         );
-        assert!(
-            opt_field.oneof_index.is_some(),
-            "Edition 2023 optional field must be in a synthetic oneof"
-        );
-        // The synthetic oneof must exist
-        assert!(
-            !msg.oneof_decl.is_empty(),
-            "synthetic oneof must be added for optional field"
-        );
+        assert_eq!(f.proto3_optional, None);
+        assert!(f.oneof_index.is_none());
+        assert!(msg.oneof_decl.is_empty());
     }
 
     /// Edition 2023 singular (unlabeled) field has no synthetic oneof.

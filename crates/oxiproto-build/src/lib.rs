@@ -134,11 +134,14 @@ pub fn compile_str_native(
         col: 0,
         message: e.to_string(),
     })?;
-    Ok(build_file_descriptor_set(
-        &resolved,
-        "<inline>.proto",
-        proto_source,
-    ))
+    let fds = build_file_descriptor_set(&resolved, "<inline>.proto", proto_source);
+    crate::parser::validate_descriptor_features(&fds).map_err(|message| BuildError::Parse {
+        file: "<inline>.proto".to_owned(),
+        line: 0,
+        col: 0,
+        message,
+    })?;
+    Ok(fds)
 }
 
 /// Compile a set of `.proto` files to a [`prost_types::FileDescriptorSet`]
@@ -156,5 +159,12 @@ pub fn compile_files_native(
     includes: &[impl AsRef<std::path::Path>],
 ) -> Result<prost_types::FileDescriptorSet, BuildError> {
     let inc: Vec<std::path::PathBuf> = includes.iter().map(|p| p.as_ref().to_path_buf()).collect();
-    parser::loader::compile_files(protos, &inc)
+    let fds = parser::loader::compile_files(protos, &inc)?;
+    crate::parser::validate_descriptor_features(&fds).map_err(|message| BuildError::Parse {
+        file: String::new(),
+        line: 0,
+        col: 0,
+        message,
+    })?;
+    Ok(fds)
 }

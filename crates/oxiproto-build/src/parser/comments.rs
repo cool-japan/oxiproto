@@ -159,12 +159,14 @@ impl CommentMap {
         // `groups` is in innermost-first order; reverse to get source order.
         groups.reverse();
 
-        if groups.is_empty() {
-            return (None, Vec::new());
-        }
-
         // The last group (after reversal) is the immediately leading group.
-        let leading_group = groups.pop().expect("non-empty groups");
+        // `pop` and the emptiness check are combined into one `let-else` so
+        // there's a single source of truth for "no groups at all" instead of
+        // an explicit `is_empty()` guard followed by an `.expect()`-asserted
+        // `pop()` that has to stay in sync with it.
+        let Some(leading_group) = groups.pop() else {
+            return (None, Vec::new());
+        };
         let leading = if leading_group.is_empty() {
             None
         } else {

@@ -5,6 +5,7 @@ use prost_types::{
     FileDescriptorSet, SourceCodeInfo,
 };
 
+use crate::message_impl::FileSyntax;
 pub use crate::options::{CodegenError, CodegenOptions};
 use crate::type_registry::TypeRegistry;
 
@@ -132,6 +133,9 @@ fn emit_file_content(
     registry: &TypeRegistry,
 ) -> Result<(), CodegenError> {
     let source_info = file.source_code_info.as_ref();
+    // The file's syntax decides the default encoding of a repeated packable
+    // scalar that carries no explicit `[packed = ...]` option.
+    let syntax = FileSyntax::from_descriptor(file);
 
     for (idx, msg) in file.message_type.iter().enumerate() {
         let path = vec![4, idx as i32];
@@ -144,6 +148,7 @@ fn emit_file_content(
             &path,
             file_package,
             registry,
+            syntax,
         )?;
     }
     for (idx, en) in file.enum_type.iter().enumerate() {
@@ -220,6 +225,7 @@ fn emit_message(
     path: &[i32],
     file_package: &str,
     registry: &TypeRegistry,
+    syntax: FileSyntax,
 ) -> Result<(), CodegenError> {
     let name = msg
         .name
@@ -278,6 +284,12 @@ fn emit_message(
         out.push_str("#[deprecated]\n");
     }
 
+    // Nesting is flattened into `Parent_Child`, which is deliberately not
+    // upper-camel-case; suppress the style lint on generated code rather than
+    // mangling names a user would have to guess at.
+    if !name_prefix.is_empty() {
+        out.push_str("#[allow(non_camel_case_types)]\n");
+    }
     out.push_str("#[derive(Debug, Clone, PartialEq, Default)]\n");
     out.push_str(&format!("pub struct {full_name} {{\n"));
 
@@ -384,6 +396,7 @@ fn emit_message(
             &full_name,
             file_package,
             &map_field_names,
+            syntax,
         )?;
         out.push_str(&impl_code);
         let name_code = crate::message_impl::emit_oxi_name_impl(msg, &full_name, file_package);
@@ -445,6 +458,7 @@ fn emit_message(
             &nested_path,
             file_package,
             registry,
+            syntax,
         )?;
     }
     for (idx, en) in msg.enum_type.iter().enumerate() {
@@ -527,7 +541,7 @@ fn scalar_type_string(
     use prost_types::field_descriptor_proto::Type;
     let ftype = field.r#type.unwrap_or(Type::String as i32);
 
-    if ftype == Type::Message as i32 || ftype == Type::Enum as i32 {
+    if crate::message_impl::is_message_like(ftype) || ftype == Type::Enum as i32 {
         let raw_type_name = field.type_name.as_deref().unwrap_or("");
         return registry.resolve(file_package, raw_type_name);
     }
@@ -623,7 +637,7 @@ fn oneof_field_type_str(
     let ftype = field.r#type.unwrap_or(Type::String as i32);
     let raw_type_name = field.type_name.as_deref().unwrap_or("");
 
-    if ftype == Type::Message as i32 {
+    if crate::message_impl::is_message_like(ftype) {
         let n = registry.resolve(file_package, raw_type_name);
         return Ok(format!("Box<{n}>"));
     }
@@ -857,7 +871,9 @@ fn field_type_str(
     let repeated = label == Label::Repeated as i32;
     let raw_type_name = field.type_name.as_deref().unwrap_or("");
 
-    if ftype == Type::Message as i32 {
+    // A proto2 `group` (TYPE_GROUP) generates exactly the same Rust type as a
+    // message field; only its wire framing differs.
+    if crate::message_impl::is_message_like(ftype) {
         let n = registry.resolve(file_package, raw_type_name);
         return if repeated {
             Ok(format!("Vec<{n}>"))

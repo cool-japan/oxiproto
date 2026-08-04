@@ -294,7 +294,14 @@ fn parse_option_name(lexer: &mut PeekLexer<'_>) -> Result<String, ParseError> {
                 }
                 Token::Eof => break,
                 _ => {
-                    let tok = lexer.next().expect("peeked");
+                    // `lexer.peek()` just confirmed a token is waiting, so
+                    // `next()` cannot return `None` here — but branch on it
+                    // properly instead of asserting that with `.expect()`, so
+                    // a future change to `Peekable`'s caching behaviour would
+                    // surface as a normal parse error rather than a panic.
+                    let Some(tok) = lexer.next() else {
+                        return Err(ParseError::UnexpectedEof);
+                    };
                     match tok {
                         Ok(spanned) => name_parts.push(spanned.value.to_string()),
                         Err(e) => return Err(ParseError::Lex(e)),
@@ -302,9 +309,14 @@ fn parse_option_name(lexer: &mut PeekLexer<'_>) -> Result<String, ParseError> {
                 }
             },
             Some(Err(_)) => {
-                // consume and propagate
-                let e = lexer.next().expect("peeked");
-                return Err(ParseError::Lex(e.expect_err("must be err")));
+                // consume and propagate; same non-panicking treatment as
+                // above for both "next() disagreed with peek()" and "next()
+                // returned Ok after peek() saw Err" (neither can happen, but
+                // both now degrade to an error instead of a panic).
+                return match lexer.next() {
+                    Some(Err(e)) => Err(ParseError::Lex(e)),
+                    _ => Err(ParseError::UnexpectedEof),
+                };
             }
         }
     }
