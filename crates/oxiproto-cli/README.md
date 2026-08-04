@@ -159,6 +159,15 @@ export PROTOC=$(which oxiproto-protoc)
 cargo build
 ```
 
+On Windows, where a missing `protoc` is the most painful — there is no package
+manager install that just works, and crates that vendor it instead need a full
+C++ toolchain:
+
+```powershell
+$env:PROTOC = "$env:USERPROFILE\.cargo\bin\oxiproto-protoc.exe"
+cargo build
+```
+
 It also runs standalone, taking the same flags `protoc -o` invocations use:
 
 ```bash
