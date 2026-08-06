@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.5] - 2026-08-06
 
 ### Added
 - **Protobuf Editions now work through the `prost-reflect` facade.** `prost-reflect` 0.16 recognises exactly two `FileDescriptorProto.syntax` values and refuses anything else, so every consumer of `oxiproto_reflect::pool_from_fds` / `pool_from_fds_bytes` — the re-exported `DynamicMessage`, `oxiproto-json`, and the CLI's `encode` / `decode` subcommands — was unusable for an edition schema. (In 0.16.5 it does not even return the `unknown syntax 'editions'` error cleanly: it panics while *formatting* it.) New `oxiproto_reflect::editions` module with `downlevel_editions` / `is_editions_file` / `has_editions_file` rewrites such a file into its **proto2** equivalent, which is the base that preserves `LABEL_REQUIRED` (from `field_presence = LEGACY_REQUIRED`), `TYPE_GROUP` (from `message_encoding = DELIMITED`), a non-zero first enum value, and EXPLICIT presence. Because proto2 defaults a repeated packable scalar to *expanded* while Editions defaults it to PACKED, the transform writes an explicit `FieldOptions.packed` on every repeated packable field that lacks one, taken from the resolved `features.repeated_field_encoding`. Both pool constructors apply it automatically; files that already declare a syntax pass through byte-identically. Known divergence, documented in the module: `features.field_presence = IMPLICIT` has no proto2 expression, so the facade reports presence for such a field (observable only for an explicitly encoded zero, which no conformant encoder writes). Covered by `crates/oxiproto-reflect/tests/editions_facade.rs` (7 tests, including facade-vs-native byte equality) and `crates/oxiproto-cli/tests/editions_convert.rs` (end-to-end `encode`/`decode` over an edition schema).
@@ -41,10 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Generated packed-repeated decode read from the wrong buffer.** `oxiproto-codegen` emitted the packed element loop as `while !_pb.is_empty() { … buf.read_*() … }` — reading from the *enclosing message's* buffer while testing the nested packed buffer for emptiness. Decoding any packed repeated scalar therefore consumed the following fields and failed with `UnexpectedEof` (or produced garbage). The same defect applied to map-entry key/value decoding, which read from `buf` instead of the entry buffer `_eb`. `scalar_decode_stmts` now takes the buffer name explicitly. Regression: `crates/oxiproto/tests/editions_codegen.rs::packed_repeated_scalar_decodes_from_the_packed_run_only`.
 - **Nested types were referenced by an undefined name in flat codegen layout.** `TypeRegistry::resolve` returned the bare last component (`Inner`) for `.pkg.Outer.Inner`, while `emit_message` emits the flattened `Outer_Inner`, so any field referring to a nested message or enum generated code that did not compile. The registry now tracks package prefixes and returns the flattened name. This is unavoidable for `group` fields, which always synthesise a nested message.
 - Removed 7 `.expect()` panic sites from the `.proto` lexer/parser hot path (`oxiproto-build/src/parser/{lexer,outline,comments}.rs`), all "peeked-so-this-cannot-fail" invariants that would previously panic instead of returning a `LexError`/`ParseError` if ever violated by a future refactor. The riskiest of these asserted UTF-8 char-boundary validity via direct string indexing (which panics on a bad boundary before the `.expect()` is even reached); it now decodes via `str::get`, which fails gracefully instead. No behavior change for valid input — all 274 `oxiproto-build` tests (including the lexer's escape-sequence and fuzz suites) pass unchanged.
-
-## [0.1.5] - 2026-07-27
-
-### Changed
 - All workspace crates bumped from `0.1.4` to `0.1.5`.
 
 ---
@@ -131,6 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial 0.1.0 release.
 
+[0.1.5]: https://github.com/cool-japan/oxiproto/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/cool-japan/oxiproto/releases/tag/v0.1.4
 [0.1.3]: https://github.com/cool-japan/oxiproto/releases/tag/v0.1.3
 [0.1.2]: https://github.com/cool-japan/oxiproto/releases/tag/v0.1.2

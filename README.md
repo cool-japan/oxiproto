@@ -10,9 +10,9 @@ A consumer with `oxiproto = "0.1.5"` in `[build-dependencies]` regenerates proto
 stock `rust:slim` container — no `apt-get install protobuf-compiler`, no cross-compile pre-stage,
 no Bazel toolchain.
 
-## Status: v0.1.5 — released 2026-07-27
+## Status: v0.1.5 — 2026-08-06
 
-**1078 tests passing (default features) / 1135 tests passing (all features), zero clippy warnings, zero rustdoc warnings.**
+**1195 tests passing (default features) / 1254 tests passing (all features), zero clippy warnings, zero rustdoc warnings.**
 
 | Milestone | Status |
 |-----------|--------|
@@ -187,7 +187,7 @@ It is depended on by: **OxiRPC** (gRPC), and any future crate using proto wire e
 ## Implementation Statistics
 
 - 43,339 lines of Rust code (149 source files)
-- 1078 tests (nextest, default features) / 1135 tests (nextest, all features), 0 failures
+- 1195 tests (nextest, default features) / 1254 tests (nextest, all features), 0 failures
 - 0 clippy warnings (`-D warnings`, all features)
 - 0 rustdoc warnings (`-D warnings`, all features)
 - MSRV: Rust 1.89 (edition 2021)
