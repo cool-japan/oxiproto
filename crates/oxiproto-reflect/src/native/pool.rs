@@ -315,6 +315,13 @@ impl Builder {
             value_by_name.insert(value_name, value_index);
         }
 
+        let syntax = self
+            .files
+            .get(file_index)
+            .map(|f| f.syntax.as_str())
+            .unwrap_or("proto2");
+        let is_closed = compute_enum_closed(en, syntax);
+
         let index = self.enums.len();
         self.enums.push(EnumData {
             full_name: full_name.clone(),
@@ -323,6 +330,7 @@ impl Builder {
             values,
             value_by_number,
             value_by_name,
+            is_closed,
         });
         if self.enum_by_name.insert(full_name.clone(), index).is_some() {
             return Err(ReflectError::Pool(format!(
@@ -404,6 +412,10 @@ impl Builder {
 
             let packed = compute_packed(field, kind, cardinality, syntax);
 
+            let has_presence = compute_has_presence(field, kind, cardinality, syntax, msg);
+
+            let validate_utf8 = compute_validate_utf8(field, kind, syntax);
+
             let oneof_index = field
                 .oneof_index
                 .map(|i| usize::try_from(i).unwrap_or(usize::MAX));
@@ -427,6 +439,8 @@ impl Builder {
                 kind,
                 cardinality,
                 packed,
+                has_presence,
+                validate_utf8,
                 oneof_index,
                 proto3_optional,
             });
@@ -641,7 +655,11 @@ fn qualify(scope: &str, name: &str) -> String {
 /// Compute the effective `packed` flag for a field.
 ///
 /// Only repeated packable scalars can be packed. proto3 packs by default;
-/// proto2 does not. An explicit `options.packed` overrides the default.
+/// proto2 does not. Files built from `edition = "2023"` carry an explicit
+/// `options.packed` (materialised from `features.repeated_field_encoding`), but
+/// fall back to the edition default of PACKED if the descriptor came from a
+/// producer that only recorded the feature. An explicit `options.packed` always
+/// wins.
 fn compute_packed(
     field: &prost_types::FieldDescriptorProto,
     kind: Kind,
@@ -655,8 +673,130 @@ fn compute_packed(
         if let Some(packed) = opts.packed {
             return packed;
         }
+        if let Some(encoding) = feature_value(&opts.uninterpreted_option, "repeated_field_encoding")
+        {
+            return encoding == "PACKED";
+        }
+    }
+    syntax == "proto3" || syntax == EDITIONS_SYNTAX
+}
+
+/// The `syntax` sentinel a `FileDescriptorProto` carries when the source file
+/// used an `edition` statement instead of a `syntax` statement.
+pub(crate) const EDITIONS_SYNTAX: &str = "editions";
+
+/// Read a resolved Editions feature out of an option list.
+///
+/// `prost-types` still models the pre-Editions `descriptor.proto`, so there is
+/// no `options.features` field; `oxiproto-build` materialises the resolved
+/// feature set as `uninterpreted_option` entries named `features.<name>` with
+/// the enumerator in `identifier_value`. This reads one of them back.
+pub(crate) fn feature_value<'a>(
+    options: &'a [prost_types::UninterpretedOption],
+    feature: &str,
+) -> Option<&'a str> {
+    options.iter().find_map(|u| {
+        let mut parts = u.name.iter();
+        let first = parts.next()?;
+        let second = parts.next()?;
+        if parts.next().is_some()
+            || first.is_extension
+            || second.is_extension
+            || first.name_part != "features"
+            || second.name_part != feature
+        {
+            return None;
+        }
+        u.identifier_value.as_deref()
+    })
+}
+
+/// Compute whether a field tracks explicit presence.
+///
+/// * repeated / map fields never track presence;
+/// * message-typed fields always do (the length prefix is the presence bit);
+/// * a member of a real or synthetic oneof always does;
+/// * otherwise the file's semantics decide — proto2 yes, proto3 no, and an
+///   edition file consults the resolved `features.field_presence`, whose
+///   default is EXPLICIT.
+fn compute_has_presence(
+    field: &prost_types::FieldDescriptorProto,
+    kind: Kind,
+    cardinality: Cardinality,
+    syntax: &str,
+    msg: &DescriptorProto,
+) -> bool {
+    if matches!(cardinality, Cardinality::Repeated)
+        || msg.options.as_ref().is_some_and(|o| o.map_entry())
+    {
+        return false;
+    }
+    if matches!(kind, Kind::Message(_) | Kind::Group(_)) {
+        return true;
+    }
+    if field.oneof_index.is_some() {
+        return true;
+    }
+    if syntax == EDITIONS_SYNTAX {
+        let presence = field
+            .options
+            .as_ref()
+            .and_then(|o| feature_value(&o.uninterpreted_option, "field_presence"))
+            .unwrap_or("EXPLICIT");
+        return presence != "IMPLICIT";
+    }
+    syntax != "proto3"
+}
+
+/// Compute whether a `string` field's payload is UTF-8 validated at decode.
+///
+/// This is `features.utf8_validation`, whose Editions baselines are `VERIFY`
+/// for proto3 and edition files and `NONE` for proto2 — matching `protoc`,
+/// which has never required a proto2 `string` to be valid UTF-8. A field that
+/// skips validation decodes invalid bytes into
+/// [`Value::UnvalidatedString`](super::value::Value::UnvalidatedString) instead
+/// of failing, so the payload survives a decode → encode round trip byte for
+/// byte.
+///
+/// Only `string` fields are affected; `bytes` never validates and every other
+/// kind has no text payload.
+fn compute_validate_utf8(
+    field: &prost_types::FieldDescriptorProto,
+    kind: Kind,
+    syntax: &str,
+) -> bool {
+    if !matches!(kind, Kind::String) {
+        return false;
+    }
+    if syntax == EDITIONS_SYNTAX {
+        let validation = field
+            .options
+            .as_ref()
+            .and_then(|o| feature_value(&o.uninterpreted_option, "utf8_validation"))
+            .unwrap_or("VERIFY");
+        return validation != "NONE";
     }
     syntax == "proto3"
+}
+
+/// Compute whether an enum is *closed*, i.e. rejects values outside its
+/// declared set.
+///
+/// This is `features.enum_type`: `CLOSED` is the proto2 baseline, `OPEN` the
+/// proto3 and Editions baseline. A closed enum routes an unrecognised number
+/// to the unknown-field set at decode time rather than storing it, which is
+/// what every proto2 implementation has always done; an open enum keeps the raw
+/// number so that a value added by a newer schema survives.
+fn compute_enum_closed(en: &EnumDescriptorProto, syntax: &str) -> bool {
+    if syntax == EDITIONS_SYNTAX {
+        let enum_type = en
+            .options
+            .as_ref()
+            .and_then(|o| feature_value(&o.uninterpreted_option, "enum_type"))
+            .unwrap_or("OPEN");
+        return enum_type == "CLOSED";
+    }
+    syntax != "proto3"
 }
 
 /// Derive the default JSON name (lowerCamelCase) from a snake_case field name,

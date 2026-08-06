@@ -6,13 +6,13 @@ It eliminates the build-time `protoc` (C++) binary that `prost-build` and `tonic
 `PATH`, by routing all `.proto` parsing and descriptor construction through a native pure-Rust
 parser, and by re-exporting the already-pure `prost` runtime as the wire-format engine.
 
-A consumer with `oxiproto = "0.1.4"` in `[build-dependencies]` regenerates protobuf bindings on a
+A consumer with `oxiproto = "0.1.5"` in `[build-dependencies]` regenerates protobuf bindings on a
 stock `rust:slim` container — no `apt-get install protobuf-compiler`, no cross-compile pre-stage,
 no Bazel toolchain.
 
-## Status: v0.1.4 — released 2026-07-27
+## Status: v0.1.5 — 2026-08-06
 
-**1078 tests passing (default features) / 1135 tests passing (all features), zero clippy warnings, zero rustdoc warnings.**
+**1195 tests passing (default features) / 1254 tests passing (all features), zero clippy warnings, zero rustdoc warnings.**
 
 | Milestone | Status |
 |-----------|--------|
@@ -48,10 +48,10 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxiproto = "0.1.4"
+oxiproto = "0.1.5"
 
 [build-dependencies]
-oxiproto-build = "0.1.4"
+oxiproto-build = "0.1.5"
 ```
 
 In `build.rs`:
@@ -129,7 +129,17 @@ through OxiProto's native pure-Rust parser instead of a C++ `protoc` install —
 changes needed on their end:
 
 ```sh
+cargo install oxiproto-cli   # installs oxiproto-cli and oxiproto-protoc
+
 PROTOC=$(which oxiproto-protoc) cargo build
+```
+
+On Windows — where a missing `protoc` bites hardest, since there is no package
+manager install that just works:
+
+```powershell
+$env:PROTOC = "$env:USERPROFILE\.cargo\bin\oxiproto-protoc.exe"
+cargo build
 ```
 
 It implements exactly the descriptor-set-generating subset of `protoc` (`-I`/`--proto_path`,
@@ -177,7 +187,7 @@ It is depended on by: **OxiRPC** (gRPC), and any future crate using proto wire e
 ## Implementation Statistics
 
 - 43,339 lines of Rust code (149 source files)
-- 1078 tests (nextest, default features) / 1135 tests (nextest, all features), 0 failures
+- 1195 tests (nextest, default features) / 1254 tests (nextest, all features), 0 failures
 - 0 clippy warnings (`-D warnings`, all features)
 - 0 rustdoc warnings (`-D warnings`, all features)
 - MSRV: Rust 1.89 (edition 2021)

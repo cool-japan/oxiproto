@@ -24,6 +24,35 @@ use crate::parser::{
 type PeekLexer<'a> = std::iter::Peekable<Lexer<'a>>;
 
 // ---------------------------------------------------------------------------
+// Recursion budget
+// ---------------------------------------------------------------------------
+
+/// Maximum nesting depth accepted for `message` / `group` definitions and for
+/// message-literal option values.
+///
+/// The parser is recursive descent: `parse_message` and `parse_group_field`
+/// are mutually recursive, and `parse_option_value` recurses through nested
+/// message literals. Without a bound, a few hundred kilobytes of source such
+/// as `message A{message B{message C{…}}}` would overflow the stack, which is
+/// reachable from every CLI subcommand that reads a user-supplied path and
+/// from `oxiproto-build` build scripts consuming third-party proto bundles.
+///
+/// The value matches protoc's own nesting limit.
+pub const MAX_NESTING_DEPTH: u32 = 100;
+
+/// Return `Err(ParseError::NestingLimitExceeded)` when `depth` has reached the
+/// budget, otherwise `Ok(())`.
+fn check_depth(depth: u32, span: Span) -> Result<(), ParseError> {
+    if depth >= MAX_NESTING_DEPTH {
+        return Err(ParseError::NestingLimitExceeded {
+            limit: MAX_NESTING_DEPTH,
+            span,
+        });
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -68,7 +97,8 @@ pub fn parse_file(source: &str) -> Result<ProtoFile, ParseError> {
                     .push(parse_option_statement(&mut lexer, spanned.span)?);
             }
             Token::Message => {
-                file.messages.push(parse_message(&mut lexer, spanned.span)?);
+                file.messages
+                    .push(parse_message(&mut lexer, spanned.span, 0)?);
             }
             Token::Enum => {
                 file.enums.push(parse_enum(&mut lexer, spanned.span)?);
@@ -83,6 +113,13 @@ pub fn parse_file(source: &str) -> Result<ProtoFile, ParseError> {
             _ => {}
         }
     }
+
+    // Editions validation runs once over the finished AST: an `edition`
+    // statement must precede every declaration, so by this point we know
+    // exactly which rule set applies to the file. Doing it here (rather than
+    // threading a flag through every `parse_*` helper) keeps the recursive
+    // descent free of mode switches.
+    crate::parser::features::validate_file(&file)?;
 
     Ok(file)
 }
@@ -547,7 +584,12 @@ fn parse_option_name_str(lexer: &mut PeekLexer<'_>) -> Result<String, ParseError
 }
 
 /// Parse an option value (after the `=`).
-fn parse_option_value(lexer: &mut PeekLexer<'_>) -> Result<OptionValue, ParseError> {
+///
+/// `depth` is the message-literal nesting level (0 at the top of an option
+/// value) and is passed **by value**, so sibling literals never accumulate
+/// budget — only genuine nesting does. This budget is independent of the
+/// `message`/`group` definition budget: the two recursions are disjoint.
+fn parse_option_value(lexer: &mut PeekLexer<'_>, depth: u32) -> Result<OptionValue, ParseError> {
     let s = next_or_eof(lexer)?;
     match s.value {
         Token::StringLit(v) => Ok(OptionValue::Str(v)),
@@ -577,6 +619,7 @@ fn parse_option_value(lexer: &mut PeekLexer<'_>) -> Result<OptionValue, ParseErr
         Token::LBrace => {
             // Message-literal option value: `{ key: value, key2: value2, ... }`
             // Parse recursively, allowing nested message literals.
+            check_depth(depth, s.span)?;
             let mut pairs: Vec<(String, OptionValue)> = Vec::new();
             loop {
                 // Consume optional separators (comma, semicolon) between pairs.
@@ -593,7 +636,7 @@ fn parse_option_value(lexer: &mut PeekLexer<'_>) -> Result<OptionValue, ParseErr
                 // Expect a colon between field name and value.
                 expect_token(lexer, "':'", |t| matches!(t, Token::Colon))?;
                 // Parse the value recursively (handles nested message literals).
-                let value = parse_option_value(lexer)?;
+                let value = parse_option_value(lexer, depth.saturating_add(1))?;
                 pairs.push((field_name, value));
             }
             Ok(OptionValue::MessageLiteral(pairs))
@@ -611,7 +654,7 @@ fn parse_option_statement(
 ) -> Result<ProtoOption, ParseError> {
     let name = parse_option_name_str(lexer)?;
     expect_equals(lexer)?;
-    let value = parse_option_value(lexer)?;
+    let value = parse_option_value(lexer, 0)?;
     expect_semi(lexer)?;
     Ok(ProtoOption {
         name,
@@ -646,7 +689,7 @@ fn parse_field_options(
         };
         let name = parse_option_name_str(lexer)?;
         expect_equals(lexer)?;
-        let value = parse_option_value(lexer)?;
+        let value = parse_option_value(lexer, 0)?;
         opts.push(ProtoOption {
             name,
             value,
@@ -943,7 +986,13 @@ fn parse_group_field(
     lexer: &mut PeekLexer<'_>,
     label: FieldLabel,
     kw_span: Span,
+    depth: u32,
 ) -> Result<(Field, Message), ParseError> {
+    // A group body is a message body, so it consumes one nesting level and
+    // shares the single budget with `parse_message` (the two are mutually
+    // recursive). `depth` is passed by value: siblings never accumulate.
+    check_depth(depth, kw_span)?;
+
     // Read group name (must start with uppercase letter per proto2 spec)
     let (group_name, name_span) = expect_ident(lexer, "group name")?;
     if !group_name.starts_with(|c: char| c.is_uppercase()) {
@@ -1000,7 +1049,7 @@ fn parse_group_field(
                 body_oneofs.push(parse_oneof(lexer, tok.span)?);
             }
             Token::Message => {
-                body_nested.push(parse_message(lexer, tok.span)?);
+                body_nested.push(parse_message(lexer, tok.span, depth.saturating_add(1))?);
             }
             Token::Enum => {
                 body_enums.push(parse_enum(lexer, tok.span)?);
@@ -1018,7 +1067,12 @@ fn parse_group_field(
                     });
                 }
                 if matches!(next.value, Token::Group) {
-                    let (gf, gm) = parse_group_field(lexer, FieldLabel::Repeated, next.span)?;
+                    let (gf, gm) = parse_group_field(
+                        lexer,
+                        FieldLabel::Repeated,
+                        next.span,
+                        depth.saturating_add(1),
+                    )?;
                     body_nested.push(gm);
                     body_fields.push(gf);
                 } else if is_type_start(&next.value) {
@@ -1034,7 +1088,12 @@ fn parse_group_field(
             Token::Optional => {
                 let next = next_or_eof(lexer)?;
                 if matches!(next.value, Token::Group) {
-                    let (gf, gm) = parse_group_field(lexer, FieldLabel::Optional, next.span)?;
+                    let (gf, gm) = parse_group_field(
+                        lexer,
+                        FieldLabel::Optional,
+                        next.span,
+                        depth.saturating_add(1),
+                    )?;
                     body_nested.push(gm);
                     body_fields.push(gf);
                 } else if is_type_start(&next.value) {
@@ -1050,7 +1109,12 @@ fn parse_group_field(
             Token::Required => {
                 let next = next_or_eof(lexer)?;
                 if matches!(next.value, Token::Group) {
-                    let (gf, gm) = parse_group_field(lexer, FieldLabel::Required, next.span)?;
+                    let (gf, gm) = parse_group_field(
+                        lexer,
+                        FieldLabel::Required,
+                        next.span,
+                        depth.saturating_add(1),
+                    )?;
                     body_nested.push(gm);
                     body_fields.push(gf);
                 } else if is_type_start(&next.value) {
@@ -1069,7 +1133,12 @@ fn parse_group_field(
             }
             Token::Group => {
                 // Bare `group GroupName = N { ... }` — treat as singular (proto2 implicit optional).
-                let (gf, gm) = parse_group_field(lexer, FieldLabel::Optional, tok.span)?;
+                let (gf, gm) = parse_group_field(
+                    lexer,
+                    FieldLabel::Optional,
+                    tok.span,
+                    depth.saturating_add(1),
+                )?;
                 body_nested.push(gm);
                 body_fields.push(gf);
             }
@@ -1121,7 +1190,14 @@ fn parse_group_field(
 
 /// Parse a `message Name { ... }` definition.
 /// The `message` keyword has already been consumed.
-fn parse_message(lexer: &mut PeekLexer<'_>, kw_span: Span) -> Result<Message, ParseError> {
+fn parse_message(
+    lexer: &mut PeekLexer<'_>,
+    kw_span: Span,
+    depth: u32,
+) -> Result<Message, ParseError> {
+    // Bound the mutual `parse_message` / `parse_group_field` recursion.
+    check_depth(depth, kw_span)?;
+
     let (name, _) = expect_ident(lexer, "message name")?;
     let open = expect_token(lexer, "{", |t| matches!(t, Token::LBrace))?;
     let open_span = open.span;
@@ -1155,7 +1231,7 @@ fn parse_message(lexer: &mut PeekLexer<'_>, kw_span: Span) -> Result<Message, Pa
                 oneofs.push(parse_oneof(lexer, tok.span)?);
             }
             Token::Message => {
-                nested_messages.push(parse_message(lexer, tok.span)?);
+                nested_messages.push(parse_message(lexer, tok.span, depth.saturating_add(1))?);
             }
             Token::Enum => {
                 nested_enums.push(parse_enum(lexer, tok.span)?);
@@ -1175,7 +1251,12 @@ fn parse_message(lexer: &mut PeekLexer<'_>, kw_span: Span) -> Result<Message, Pa
                 }
                 // `repeated group GroupName = N { ... }` — proto2 group field
                 if matches!(next.value, Token::Group) {
-                    let (gf, gm) = parse_group_field(lexer, FieldLabel::Repeated, next.span)?;
+                    let (gf, gm) = parse_group_field(
+                        lexer,
+                        FieldLabel::Repeated,
+                        next.span,
+                        depth.saturating_add(1),
+                    )?;
                     nested_messages.push(gm);
                     fields.push(gf);
                 } else if is_type_start(&next.value) {
@@ -1192,7 +1273,12 @@ fn parse_message(lexer: &mut PeekLexer<'_>, kw_span: Span) -> Result<Message, Pa
                 let next = next_or_eof(lexer)?;
                 // `optional group GroupName = N { ... }` — proto2 group field
                 if matches!(next.value, Token::Group) {
-                    let (gf, gm) = parse_group_field(lexer, FieldLabel::Optional, next.span)?;
+                    let (gf, gm) = parse_group_field(
+                        lexer,
+                        FieldLabel::Optional,
+                        next.span,
+                        depth.saturating_add(1),
+                    )?;
                     nested_messages.push(gm);
                     fields.push(gf);
                 } else if is_type_start(&next.value) {
@@ -1210,7 +1296,12 @@ fn parse_message(lexer: &mut PeekLexer<'_>, kw_span: Span) -> Result<Message, Pa
                 let next = next_or_eof(lexer)?;
                 // `required group GroupName = N { ... }` — proto2 group field
                 if matches!(next.value, Token::Group) {
-                    let (gf, gm) = parse_group_field(lexer, FieldLabel::Required, next.span)?;
+                    let (gf, gm) = parse_group_field(
+                        lexer,
+                        FieldLabel::Required,
+                        next.span,
+                        depth.saturating_add(1),
+                    )?;
                     nested_messages.push(gm);
                     fields.push(gf);
                 } else if is_type_start(&next.value) {
@@ -1230,7 +1321,12 @@ fn parse_message(lexer: &mut PeekLexer<'_>, kw_span: Span) -> Result<Message, Pa
             }
             Token::Group => {
                 // Bare `group GroupName = N { ... }` at message level (implicit optional).
-                let (gf, gm) = parse_group_field(lexer, FieldLabel::Optional, tok.span)?;
+                let (gf, gm) = parse_group_field(
+                    lexer,
+                    FieldLabel::Optional,
+                    tok.span,
+                    depth.saturating_add(1),
+                )?;
                 nested_messages.push(gm);
                 fields.push(gf);
             }

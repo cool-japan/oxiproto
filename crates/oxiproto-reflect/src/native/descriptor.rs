@@ -53,8 +53,8 @@ pub enum Kind {
     Message(usize),
     /// An enum; the index identifies the enum in the pool.
     Enum(usize),
-    /// A proto2 group (unsupported on the wire); the index identifies the
-    /// synthetic group message in the pool.
+    /// A proto2 group; the index identifies the synthetic group message in the
+    /// pool. Encoded/decoded via start-group/end-group tags (wire types 3/4).
     Group(usize),
 }
 
@@ -149,8 +149,18 @@ pub(crate) struct FieldData {
     pub kind: Kind,
     pub cardinality: Cardinality,
     /// Whether the field is encoded packed (only meaningful for repeated
-    /// packable scalars). Defaults follow proto3 (packed) / proto2 (unpacked).
+    /// packable scalars). Defaults follow proto3 (packed) / proto2 (unpacked),
+    /// and `features.repeated_field_encoding` for edition files.
     pub packed: bool,
+    /// Whether the field tracks explicit presence (proto2 `optional`, proto3
+    /// `optional`, any message field, any oneof member, or an edition field
+    /// whose resolved `features.field_presence` is not `IMPLICIT`).
+    pub has_presence: bool,
+    /// Whether a `string` field's payload is UTF-8 validated at decode time —
+    /// the resolved `features.utf8_validation` (`VERIFY` for proto3 and the
+    /// Editions default, `NONE` for proto2). Always `false` for a non-`string`
+    /// field.
+    pub validate_utf8: bool,
     /// Index into the parent message's `oneofs`, if this field is a member of
     /// a oneof. Synthetic oneofs (proto3 optional) are included.
     pub oneof_index: Option<usize>,
@@ -180,6 +190,9 @@ pub(crate) struct EnumData {
     pub values: Vec<EnumValueData>,
     pub value_by_number: HashMap<i32, usize>,
     pub value_by_name: HashMap<String, usize>,
+    /// Whether the enum is closed (`features.enum_type = CLOSED`; the proto2
+    /// baseline) and therefore rejects numbers outside its declared set.
+    pub is_closed: bool,
 }
 
 /// Owned data for a single enum value.
@@ -559,7 +572,31 @@ impl FieldDescriptor {
         self.data().packed
     }
 
-    /// `true` if this field is a proto3 `optional`.
+    /// `true` if this field tracks explicit presence.
+    ///
+    /// Repeated and map fields never do.  Message-typed fields and oneof
+    /// members always do.  For a plain scalar the file's semantics decide:
+    /// proto2 yes, proto3 no, and an `edition` file follows its resolved
+    /// `features.field_presence` (default `EXPLICIT`).
+    pub fn has_presence(&self) -> bool {
+        self.data().has_presence
+    }
+
+    /// `true` if this `string` field's payload is UTF-8 validated when decoded.
+    ///
+    /// This is the resolved `features.utf8_validation`: `VERIFY` for proto3 and
+    /// the Editions default, `NONE` for proto2 (and for any edition scope that
+    /// writes `features.utf8_validation = NONE`). A field that skips validation
+    /// decodes invalid bytes into
+    /// [`Value::UnvalidatedString`](super::value::Value::UnvalidatedString)
+    /// rather than failing.
+    ///
+    /// Always `false` for a field that is not a `string`.
+    pub fn validates_utf8(&self) -> bool {
+        self.data().validate_utf8
+    }
+
+    /// Whether this field is a proto3 `optional` (synthetic-oneof) field.
     pub fn is_proto3_optional(&self) -> bool {
         self.data().proto3_optional
     }
@@ -738,6 +775,18 @@ impl EnumDescriptor {
             enum_index,
             value_index,
         })
+    }
+
+    /// `true` if this enum is *closed*: a number outside its declared set is
+    /// not a legal value.
+    ///
+    /// This is the resolved `features.enum_type`. Closed is the proto2
+    /// baseline; open is the proto3 and Editions default. At decode time an
+    /// unrecognised number for a closed enum is routed to the message's
+    /// unknown-field set — preserved byte-for-byte on re-encode, but not
+    /// readable through the field — while an open enum stores the raw number.
+    pub fn is_closed(&self) -> bool {
+        self.data().is_closed
     }
 
     /// Look up an enum value by its number.

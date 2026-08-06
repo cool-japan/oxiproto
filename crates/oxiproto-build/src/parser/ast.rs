@@ -18,14 +18,41 @@ use crate::parser::span::Span;
 /// A Protobuf Edition identifier.
 ///
 /// Editions replace the `syntax` statement starting from Edition 2023.
-/// The descriptor builder treats Edition 2023 as proto3-like semantics
-/// (implicit field presence, no required fields) with additional opt-in
-/// feature flags via field options.
+/// An edition file's semantics are not proto2's or proto3's: every behaviour
+/// that used to differ between the two syntaxes is a *feature* resolved by
+/// [`crate::parser::features`], inherited from file → message → field.
+///
+/// # Why only Edition 2023
+///
+/// Edition 2024 is deliberately **not** accepted. Guessing at an edition's
+/// feature table is not a conservative failure mode: an edition is defined
+/// entirely by the defaults it changes, so an approximation silently produces a
+/// descriptor set whose wire and JSON behaviour differ from `protoc`'s for the
+/// same source — exactly the class of bug the proto3-approximation of Edition
+/// 2023 used to be. Two concrete blockers:
+///
+/// * Edition 2024 introduces `features.default_symbol_visibility`, which is
+///   bound up with the `export` / `local` symbol-visibility modifiers. Those
+///   are *grammar* additions; this parser's lexer and statement parser do not
+///   recognise them, so an Edition 2024 file using them would fail to parse
+///   anyway — just with a worse error.
+/// * Its remaining feature defaults (including `features.enforce_naming_style`)
+///   are not pinned down here from a primary source, and the resolution engine
+///   in [`crate::parser::features`] is only sound when every baseline is exact.
+///
+/// The rejection is typed
+/// ([`ParseError::UnsupportedEdition`](crate::parser::ParseError::UnsupportedEdition)),
+/// names the offending value, and costs nothing to lift once the 2024 feature
+/// table and the visibility grammar are both implemented — the resolution
+/// engine itself is edition-agnostic.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edition {
     /// `edition = "2023"` — the first generally-available Protobuf Edition.
     Edition2023,
-    /// An unrecognised edition string, stored verbatim for forward compatibility.
+    /// An unrecognised or not-yet-supported edition string, stored verbatim.
+    ///
+    /// Reaching the parser with this variant is an error, never a fallback;
+    /// see the type-level note above.
     Unknown(String),
 }
 

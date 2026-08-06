@@ -219,6 +219,56 @@ impl<'a> DecodeBuffer<'a> {
         core::str::from_utf8(bytes).map_err(WireError::InvalidUtf8)
     }
 
+    /// Read the body of a proto2 group, given the field number of the
+    /// start-group tag that has *already been consumed* by the caller.
+    ///
+    /// A group is encoded as a start-group tag (wire type 3), then the group's
+    /// fields inline, then an end-group tag (wire type 4) carrying the same
+    /// field number. This method scans forward from the current position — using
+    /// [`skip_field`](Self::skip_field) to step over each inner field, so nested
+    /// groups are consumed whole and cannot be mistaken for the terminator — and
+    /// returns the slice covering exactly the group's body (everything between
+    /// the two group tags, **excluding** the end-group tag). On return the cursor
+    /// sits immediately after the matching end-group tag.
+    ///
+    /// The returned slice is a self-contained sequence of fields, so it can be
+    /// decoded like an embedded message (e.g. via [`nested`](Self::nested), which
+    /// also enforces the recursion budget for group-in-group nesting).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::MalformedGroup`] if the input ends before the
+    /// matching end-group tag, or if an end-group tag for a *different* field
+    /// number is encountered. Propagates [`WireError::RecursionLimitExceeded`]
+    /// from [`skip_field`](Self::skip_field) when an inner group nests deeper
+    /// than [`MAX_DECODE_DEPTH`], and [`WireError::UnexpectedEof`] on a truncated
+    /// inner field.
+    pub fn read_group_body(&mut self, field_number: u32) -> Result<&'a [u8], WireError> {
+        let start = self.pos;
+        loop {
+            // A well-formed group must terminate before the buffer is exhausted.
+            if self.is_empty() {
+                return Err(WireError::MalformedGroup { field_number });
+            }
+            let tag_start = self.pos;
+            let tag = self.read_tag()?;
+            match tag.wire_type {
+                WireType::EGroup => {
+                    if tag.field_number != field_number {
+                        return Err(WireError::MalformedGroup { field_number });
+                    }
+                    // Body is everything up to (but not including) this tag.
+                    return Ok(&self.buf[start..tag_start]);
+                }
+                other => {
+                    // Step over the inner field (nested groups are skipped whole
+                    // by `skip_field`, which also bounds their recursion depth).
+                    self.skip_field(other)?;
+                }
+            }
+        }
+    }
+
     /// Skip a field based on its wire type.
     ///
     /// This advances the cursor past the field's value without interpreting it.
@@ -603,6 +653,78 @@ mod tests {
         let trailing = dec.read_tag().expect("trailing tag");
         assert_eq!(trailing.field_number, 3);
         assert_eq!(dec.read_varint().expect("trailing val"), 42);
+    }
+
+    #[test]
+    fn read_group_body_extracts_inner_fields() {
+        // SGroup(1) | inner varint field 2 = 7 | nested SGroup(4) with its own
+        // inner field | EGroup(4) | EGroup(1) | trailing field 3 = 42.
+        // The body slice must span both inner fields and the whole nested group
+        // but stop before the outer EGroup; the cursor must land on the trailing
+        // field.
+        let mut enc = EncodeBuffer::new();
+        enc.write_tag(1, WireType::SGroup).expect("sgroup");
+        enc.write_tag(2, WireType::Varint).expect("inner tag");
+        enc.write_varint(7);
+        // A nested group whose EGroup(4) must NOT be mistaken for the outer end.
+        enc.write_tag(4, WireType::SGroup).expect("nested sgroup");
+        enc.write_tag(5, WireType::Varint).expect("nested inner");
+        enc.write_varint(9);
+        enc.write_tag(4, WireType::EGroup).expect("nested egroup");
+        enc.write_tag(1, WireType::EGroup).expect("egroup");
+        enc.write_tag(3, WireType::Varint).expect("trailing tag");
+        enc.write_varint(42);
+
+        let mut dec = DecodeBuffer::new(enc.as_bytes());
+        let tag = dec.read_tag().expect("sgroup tag");
+        assert_eq!(tag.wire_type, WireType::SGroup);
+        let body = dec.read_group_body(tag.field_number).expect("group body");
+
+        // The body is itself a valid field stream: field 2 then the nested group.
+        let mut body_dec = DecodeBuffer::new(body);
+        let f2 = body_dec.read_tag().expect("body field 2");
+        assert_eq!(f2.field_number, 2);
+        assert_eq!(body_dec.read_varint().expect("v"), 7);
+        let ng = body_dec.read_tag().expect("nested sgroup");
+        assert_eq!(ng.wire_type, WireType::SGroup);
+        body_dec.skip_field(ng.wire_type).expect("skip nested");
+        assert!(body_dec.is_empty(), "body ends after the nested group");
+
+        // The outer cursor resumed at the trailing field.
+        let trailing = dec.read_tag().expect("trailing tag");
+        assert_eq!(trailing.field_number, 3);
+        assert_eq!(dec.read_varint().expect("trailing val"), 42);
+    }
+
+    #[test]
+    fn read_group_body_unterminated_is_malformed() {
+        // SGroup(1) with an inner field but no matching EGroup.
+        let mut enc = EncodeBuffer::new();
+        enc.write_tag(1, WireType::SGroup).expect("sgroup");
+        enc.write_tag(2, WireType::Varint).expect("inner tag");
+        enc.write_varint(7);
+
+        let mut dec = DecodeBuffer::new(enc.as_bytes());
+        let tag = dec.read_tag().expect("sgroup tag");
+        match dec.read_group_body(tag.field_number) {
+            Err(WireError::MalformedGroup { field_number: 1 }) => {}
+            other => panic!("expected MalformedGroup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_group_body_mismatched_end_is_malformed() {
+        // SGroup(1) closed by EGroup(2) — the field numbers disagree.
+        let mut enc = EncodeBuffer::new();
+        enc.write_tag(1, WireType::SGroup).expect("sgroup");
+        enc.write_tag(2, WireType::EGroup).expect("wrong egroup");
+
+        let mut dec = DecodeBuffer::new(enc.as_bytes());
+        let tag = dec.read_tag().expect("sgroup tag");
+        match dec.read_group_body(tag.field_number) {
+            Err(WireError::MalformedGroup { field_number: 1 }) => {}
+            other => panic!("expected MalformedGroup, got {other:?}"),
+        }
     }
 
     #[test]

@@ -1,12 +1,12 @@
 # OxiProto Project TODO
 
 ## Status
-v0.1.4 released 2026-07-27. Functional protobuf toolkit (~43,339 SLOC, 1135 tests).
+v0.1.5, 2026-08-06. Functional protobuf toolkit (~43,339 SLOC, 1254 tests all-features).
 Native Pure-Rust wire format codec lives in `oxiproto-core::wire`
 (varint/zigzag/tag/fixed/length-delimited, DecodeBuffer/EncodeBuffer, UnknownFields).
 Native .proto parser (oxiproto-build, `native-parser` feature, now default) handles
-proto2+proto3, multi-file import resolution, source_code_info, custom options, group
-desugaring. Codegen handles map/oneof/Default/doc-comments/services/JSON/OxiMessage impls.
+proto2+proto3+Editions (`edition = "2023"`, full feature resolution), multi-file import
+resolution, source_code_info, custom options, group desugaring. Codegen handles map/oneof/Default/doc-comments/services/JSON/OxiMessage impls.
 WKT adds RFC3339, duration strings, Any, FieldMask, Struct, wrappers, chrono/time interop.
 CLI gained describe/encode/decode/format/lint/breaking/doc subcommands. oxiproto-json
 provides canonical Protobuf-JSON mapping. Zero clippy warnings, zero rustdoc warnings,
@@ -43,8 +43,35 @@ encode/decode, reflection, and codegen.
 - [x] Phase 4: Native reflection -- DescriptorPool, DynamicMessage in oxiproto-reflect (DONE 2026-06-03)
   - NativeDescriptorPool/NativeDynamicMessage with full encode/decode (wire), to_json/from_json, to_text/from_text; FileDescriptor option accessors (java_package, go_package, deprecated, optimize_for); 108 tests green.
 - [x] Phase 5: oxiproto-json -- canonical Protobuf-JSON mapping (camelCase, base64 bytes, RFC3339 timestamps) (~600 SLOC)
-- [ ] Phase 6: Edition 2023 support (~300 SLOC)
-    - **BLOCKED: upstream protobuf Edition 2023 spec not yet finalized; revisit when stable**
+- [x] Phase 6: Edition 2023 support (DONE 2026-08-04)
+    - `oxiproto-build::parser::features`: `FeatureSet` / `FeatureOverrides` for the six Edition 2023
+      features (field_presence, enum_type, repeated_field_encoding, utf8_validation,
+      message_encoding, json_format) with edition/proto2/proto3 baselines and file → message →
+      nested → oneof → field (and enum → enum value) inheritance.
+    - Removed-construct enforcement (`optional`/`required`/`group` rejected in edition files;
+      `features.*` rejected outside them) and typed errors for unknown/inapplicable features.
+    - Descriptor materialisation: LEGACY_REQUIRED → LABEL_REQUIRED, repeated_field_encoding →
+      explicit `packed`, DELIMITED → TYPE_GROUP, plus the resolved feature set preserved as
+      `features.<name>` `uninterpreted_option` entries (prost-types 0.14 has no `FeatureSet`).
+    - Reflection `FieldDescriptor::has_presence()`; presence-aware wire/JSON/text emission;
+      codegen honours explicit `packed` and emits group framing for TYPE_GROUP.
+- [x] Phase 6b: Editions deferral recovery (DONE 2026-08-04)
+    - **Wire-compat fix:** codegen no longer packs a proto2 repeated packable scalar by
+      default (`FileSyntax` classification; proto2 expanded, proto3/Editions packed, explicit
+      `[packed = ...]` wins) — matching `protoc`. Also fixed generated `encoded_len`, which
+      computed the packed size formula for EXPANDED fields and so disagreed with `encode_raw`.
+    - **`features.utf8_validation` enforced at decode:** `NONE` decodes an invalid payload into
+      the typed `native::Value::UnvalidatedString` (bytes preserved verbatim, valid UTF-8 still
+      lands on `Value::String`); `VERIFY` still rejects. `FieldDescriptor::validates_utf8()`.
+    - **`features.enum_type` enforced at decode:** a CLOSED enum routes an unrecognised number
+      to the unknown-field set (raw varint preserved); OPEN keeps it. `EnumDescriptor::is_closed()`.
+    - **prost-reflect facade:** `oxiproto_reflect::editions::downlevel_editions` rewrites a
+      `syntax = "editions"` file to its proto2 equivalent (materialising `packed`) so
+      `pool_from_fds` / `pool_from_fds_bytes` — and therefore `oxiproto-json` and the CLI's
+      `encode`/`decode` — accept edition schemas. Known divergence: `field_presence = IMPLICIT`
+      has no proto2 expression; documented in the module.
+    - **Edition 2024:** still rejected with the typed `ParseError::UnsupportedEdition`; see
+      "Proposed follow-ups" for why.
 
 ## API Improvements
 - [x] Unify error handling across all sub-crates (done 2026-05-29)
@@ -104,24 +131,40 @@ encode/decode, reflection, and codegen.
 ## Open Questions
 1. Should OxiRPC absorb OxiProto, or remain a separate consumer?
 2. Do we need oxiproto-grpc-codegen, or does gRPC stub emission belong in OxiRPC?
-3. Edition 2023 commitment timeline -- wait for protobuf working group stability?
+3. ~~Edition 2023 commitment timeline~~ -- resolved: Edition 2023 is implemented (Phase 6).
+   Open remainder: adopt Edition 2024 once its feature table is pinned down.
 4. Validator integration (buf.validate) -- v0.2+ decision
 
 ## Proposed follow-ups
 
-- **Phase 2 body parser** (requires Phase 2 lexer/outline from this run): message/enum/service body parsing, import resolution semantics, source code info, FileDescriptorSet construction (~1500 SLOC; split into 3 follow-up /ultra runs).
-- **no_std support for oxiproto-core::wire**: add default=["std"] + alloc feature, gate std::* usage, validate with cargo build --no-default-features --features alloc. Requires CI pipeline first.
-- **Phase 6 Edition 2023**: blocked on upstream protobuf working group stability.
+_Pruned 2026-08-03: this section used to also list Phase 2 body parsing, no_std
+support, benchmarks, the conformance suite, the README refresh, the Phase 2
+"remainder", native JSON codegen, Phase 4 native reflection, the fuzz harness,
+and the protox-vs-native-parser benchmark as still-open follow-ups. All of
+those shipped (see the `[x]` entries above, plus `crates/oxiproto-core/tests/no_std_smoke.rs`,
+`crates/oxiproto-core/benches/{wire,message}.rs`, `crates/oxiproto/tests/conformance.rs`,
+and `crates/oxiproto-codegen/src/json_impl.rs` emitting real per-type
+`to_json`/`from_json` wired to the CLI's `--json` flag via `crates/oxiproto-cli/src/gen.rs`)
+and were removed from this list rather than left to overstate remaining work._
+
+- **Edition 2024** — deliberately *not* accepted (reviewed 2026-08-04, decision unchanged).
+  An edition is defined entirely by the feature defaults it changes, so approximating it does
+  not degrade gracefully: it emits a descriptor set whose wire/JSON behaviour differs from
+  `protoc`'s for the same source while reporting success — the same class of bug the old
+  proto3-approximation of Edition 2023 was. Two concrete blockers, both of which must be lifted
+  together:
+    1. `features.default_symbol_visibility` is bound up with the `export` / `local` symbol
+       visibility modifiers, which are *grammar* additions the lexer and statement parser do
+       not recognise at all;
+    2. the remaining 2024 defaults (including `features.enforce_naming_style`) are not pinned
+       down here from a primary source, and `parser::features` resolution is only sound when
+       every baseline is exact.
+  `parse_edition_statement` therefore returns `ParseError::UnsupportedEdition("2024")`, naming
+  the offending value (`tests/editions.rs::edition_2024_is_rejected_rather_than_approximated`).
+  The resolution engine itself is edition-agnostic, so lifting this is a table + grammar change,
+  not a redesign.
 - **oxiproto-validate crate**: blocked on Open Question #4 decision.
-- **Benchmarks** (criterion harness across all crates): independent follow-up.
-- **Conformance test suite** against Google canonical protobuf implementations: independent follow-up.
-- **README.md refresh**: update "M0 skeleton" status to reflect M0-M5 + Phase 1 done, Phase 3/CLI partial. Run /readme after next /ultra.
-- **Phase 2 remainder** (follow-up /ultra): import resolution (include-path search, public/weak), proto2 syntax, `source_code_info`, full/custom option values, Edition 2023, making `native-parser` the default (replace protox). Several follow-up runs.
-- **Native canonical JSON codegen** (follow-up /ultra): emit self-contained `to_json`/`from_json` on generated types. Deferred because oxiproto-json is DynamicMessage-based; native structs need their own field-by-field JSON codec with camelCase, enum-as-name, 64-bit-as-string, base64, NaN/Inf, WKT special-casing. Own ~400-SLOC run; wires the dead `--json` CLI flag then.
-- **Phase 4 native reflection** (follow-up /ultra, depends on Phase 2 completion): DescriptorPool / DynamicMessage rewrite.
-- **Fuzz harness** (follow-up /ultra): prefer pure-Rust `arbitrary`/proptest no-panic harness for varint + lexer (cargo-fuzz uses libFuzzer which is C++, violating Pure-Rust Policy).
 - **OxiMessage → Message alias cutover** (follow-up /ultra): 4 trait-level blockers (wkt/any_ext, reflect/lib, cli/convert, build/builder) all tied to prost-derived/DynamicMessage; safe only after all consumers migrate off prost::Message.
-- **Benchmark native .proto parsing vs protox** (follow-up /ultra, depends on Phase 2 native-parser being default).
 - **Custom/extension option values** (follow-up /ultra): applying `unknown`/extension-typed option values (protobuf message-typed custom options) to descriptors. Currently only well-known options applied.
 - **protox replacement** (follow-up /ultra): rewire `Builder::compile`, `compile_str`, `compile_protos` off protox once source_code_info, proto2, and custom options close the fidelity gap.
 
@@ -142,4 +185,4 @@ _Consolidated from static audit + Opus adversarial bug-hunt (48 verified defects
 - [x] **A/med · P1** examples (empty dir) populated: `examples/encode_decode.rs`, `examples/reflection.rs`, `examples/codegen_usage.rs` (new `oxiproto-examples` workspace member, `cargo run --example <name> -p oxiproto-examples`).
 - [x] **A/med · P1** CLI typed errors: `oxiproto-cli` now returns `crate::error::CliError` (typed enum wrapping `OxiProtoError`/`CodegenError`/`ReflectError`/`JsonError`/`serde_json::Error`/`prost::DecodeError`/`io::Error`) end-to-end instead of `Box<dyn std::error::Error>`.
 - [x] **A/med · P1** wire fuzz: `crates/oxiproto-core/tests/fuzz_message_decode.rs` — OxiMessage-level arbitrary-bytes-never-panic proptest, encode→decode round-trip proptest, bit-flip mutation proptest, and a seeded-PRNG (xorshift64) adversarial sweep, plus a hand-written-`OxiMessage` recursion-limit regression.
-- [ ] **A/med · P1** Edition 2023 (~300 SLOC) — **BLOCKED (external), not merely deferred**: the upstream protobuf Editions feature-resolution spec (`features.proto`, field-presence/repeated-encoding/message-encoding/enum-type/json-format feature defaults) has not been finalized by the protobuf working group as of this writing. `oxiproto-build` already recognizes the `edition = "2023";` statement and parses it (see `crates/oxiproto-build/TODO.md`: `Token::Edition`, `Edition` enum, `parse_edition_statement`, conflict detection) using a **proto3-approximation** of semantics (no required fields, synthetic oneofs for `optional`) — that is preview-quality syntax acceptance, not the full Editions feature-resolution mechanism Phase 6 targets. Full Phase 6 work is intentionally on hold until the upstream spec stabilizes; not in scope for the examples/CLI-errors/wire-fuzz pass regardless.
+- [x] **A/med · P1** Edition 2023 — **DONE 2026-08-04**: full Editions feature resolution implemented (see Phase 6 above). The old "blocked on upstream" note was superseded: the Edition 2023 feature table (`field_presence`, `enum_type`, `repeated_field_encoding`, `utf8_validation`, `message_encoding`, `json_format`) is now implemented in `oxiproto-build::parser::features`, replacing the previous proto3-approximation that merely accepted the `edition` statement.

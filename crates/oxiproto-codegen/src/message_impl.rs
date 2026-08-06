@@ -8,10 +8,61 @@
 
 use prost_types::{
     field_descriptor_proto::{Label, Type},
-    DescriptorProto, FieldDescriptorProto,
+    DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
 };
 
 use crate::options::CodegenError;
+
+// ── file syntax ──────────────────────────────────────────────────────────────
+
+/// The declared syntax of the `.proto` file a message came from.
+///
+/// Only the parts that change generated *wire* behaviour are modelled. The one
+/// that matters today is the default encoding of a repeated packable scalar
+/// that carries no explicit `[packed = ...]` option: proto2 leaves it
+/// **unpacked**, proto3 and Editions pack it. Generating packed bytes for a
+/// proto2 schema is a wire-compatibility bug against `protoc`, because a proto2
+/// reader of a *different* implementation is entitled to treat the field's
+/// declared encoding as authoritative when re-serialising.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum FileSyntax {
+    /// `syntax = "proto2";`, or a file with no `syntax` statement at all
+    /// (protoc records the absence of the statement as proto2).
+    #[default]
+    Proto2,
+    /// `syntax = "proto3";`
+    Proto3,
+    /// `edition = "20XX";` — a `FileDescriptorProto` whose `syntax` field
+    /// carries the `"editions"` sentinel.
+    Editions,
+}
+
+/// The `syntax` sentinel a `FileDescriptorProto` carries when the source used
+/// an `edition` statement instead of a `syntax` statement.
+pub(crate) const EDITIONS_SYNTAX: &str = "editions";
+
+impl FileSyntax {
+    /// Classify a file descriptor's `syntax` field.
+    ///
+    /// An absent or unrecognised value maps to [`FileSyntax::Proto2`], matching
+    /// `protoc`, which treats a missing `syntax` statement as proto2.
+    pub(crate) fn from_descriptor(file: &FileDescriptorProto) -> Self {
+        match file.syntax.as_deref() {
+            Some("proto3") => FileSyntax::Proto3,
+            Some(EDITIONS_SYNTAX) => FileSyntax::Editions,
+            _ => FileSyntax::Proto2,
+        }
+    }
+
+    /// Whether a repeated packable scalar with no explicit `[packed = ...]`
+    /// option is encoded packed.
+    ///
+    /// proto2 defaults to expanded (one tag per element); proto3 and Editions
+    /// (`features.repeated_field_encoding = PACKED`) default to packed.
+    pub(crate) fn packs_repeated_by_default(self) -> bool {
+        !matches!(self, FileSyntax::Proto2)
+    }
+}
 
 // ── wire-type constants (proto encoding spec) ────────────────────────────────
 
@@ -27,6 +78,8 @@ fn wire_type_for_field(ftype: i32) -> u32 {
         || ftype == Type::Double as i32
     {
         1 // I64
+    } else if ftype == Type::Group as i32 {
+        3 // SGroup — the field body is delimited, not length-prefixed
     } else if ftype == Type::Message as i32
         || ftype == Type::Bytes as i32
         || ftype == Type::String as i32
@@ -41,7 +94,34 @@ fn wire_type_for_field(ftype: i32) -> u32 {
 fn is_packable(ftype: i32) -> bool {
     !matches!(
         ftype,
-        t if t == Type::String as i32 || t == Type::Bytes as i32 || t == Type::Message as i32
+        t if t == Type::String as i32
+            || t == Type::Bytes as i32
+            || t == Type::Message as i32
+            || t == Type::Group as i32
+    )
+}
+
+/// Whether a descriptor type is message-shaped.
+///
+/// `TYPE_GROUP` is a proto2 `group` — and, since Editions, any message field
+/// carrying `features.message_encoding = DELIMITED`. It generates the same Rust
+/// type as a `message` field and has the same JSON/text mapping; only the wire
+/// framing differs (start/end-group tags instead of a length prefix).
+pub(crate) fn is_message_like(ftype: i32) -> bool {
+    ftype == Type::Message as i32 || ftype == Type::Group as i32
+}
+
+/// Whether the field is framed with start-group/end-group tags.
+fn is_group(ftype: i32) -> bool {
+    ftype == Type::Group as i32
+}
+
+/// The encoded length of the start+end group tag pair for `field_number`.
+fn group_tag_len_expr(field_number: u32) -> String {
+    format!(
+        "({} + {})",
+        tag_len_expr(field_number, 3),
+        tag_len_expr(field_number, 4)
     )
 }
 
@@ -177,56 +257,61 @@ fn scalar_encode_stmt(field_number: u32, ftype: i32, value_expr: &str, indent: &
 /// Returns decode code (Rust expression String) to read a scalar from DecodeBuffer.
 /// Returns `(assign_expr, read_stmts)` where `assign_stmts` is the code to populate
 /// the field.
-fn scalar_decode_stmts(ftype: i32, field_access: &str, indent: &str) -> String {
+/// Emit the statement that decodes one scalar value out of `buf_name`.
+///
+/// `buf_name` matters: a packed repeated field and a map entry decode out of a
+/// *nested* buffer (`_pb` / `_eb`), not out of the message's own `buf`. Reading
+/// from the wrong buffer silently consumes the enclosing message's bytes.
+fn scalar_decode_stmts(ftype: i32, field_access: &str, indent: &str, buf_name: &str) -> String {
     match ftype {
         t if t == Type::Fixed32 as i32 => format!(
-            "{indent}{field_access} = buf.read_fixed32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)? as i32;\n"
+            "{indent}{field_access} = {buf_name}.read_fixed32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)? as i32;\n"
         ),
         t if t == Type::Sfixed32 as i32 => format!(
-            "{indent}{field_access} = buf.read_fixed32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)? as i32;\n"
+            "{indent}{field_access} = {buf_name}.read_fixed32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)? as i32;\n"
         ),
         t if t == Type::Float as i32 => format!(
-            "{indent}{field_access} = buf.read_float().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
+            "{indent}{field_access} = {buf_name}.read_float().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
         ),
         t if t == Type::Fixed64 as i32 => format!(
-            "{indent}{field_access} = buf.read_fixed64().map_err(::oxiproto_core::OxiProtoError::WireFormatError)? as u64;\n"
+            "{indent}{field_access} = {buf_name}.read_fixed64().map_err(::oxiproto_core::OxiProtoError::WireFormatError)? as u64;\n"
         ),
         t if t == Type::Sfixed64 as i32 => format!(
-            "{indent}{field_access} = buf.read_fixed64().map_err(::oxiproto_core::OxiProtoError::WireFormatError)? as i64;\n"
+            "{indent}{field_access} = {buf_name}.read_fixed64().map_err(::oxiproto_core::OxiProtoError::WireFormatError)? as i64;\n"
         ),
         t if t == Type::Double as i32 => format!(
-            "{indent}{field_access} = buf.read_double().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
+            "{indent}{field_access} = {buf_name}.read_double().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
         ),
         t if t == Type::Sint32 as i32 => format!(
-            "{indent}{field_access} = ::oxiproto_core::wire::zigzag::zigzag_decode32(buf.read_varint32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?);\n"
+            "{indent}{field_access} = ::oxiproto_core::wire::zigzag::zigzag_decode32({buf_name}.read_varint32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?);\n"
         ),
         t if t == Type::Sint64 as i32 => format!(
-            "{indent}{field_access} = ::oxiproto_core::wire::zigzag::zigzag_decode64(buf.read_varint().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?);\n"
+            "{indent}{field_access} = ::oxiproto_core::wire::zigzag::zigzag_decode64({buf_name}.read_varint().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?);\n"
         ),
         t if t == Type::String as i32 => format!(
-            "{indent}{field_access} = buf.read_string().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?.to_owned();\n"
+            "{indent}{field_access} = {buf_name}.read_string().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?.to_owned();\n"
         ),
         t if t == Type::Bytes as i32 => format!(
-            "{indent}{field_access} = buf.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?.to_vec();\n"
+            "{indent}{field_access} = {buf_name}.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?.to_vec();\n"
         ),
         t if t == Type::Int32 as i32 => format!(
-            "{indent}{field_access} = buf.read_varint_i32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
+            "{indent}{field_access} = {buf_name}.read_varint_i32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
         ),
         t if t == Type::Int64 as i32 => format!(
-            "{indent}{field_access} = buf.read_varint_i64().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
+            "{indent}{field_access} = {buf_name}.read_varint_i64().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
         ),
         t if t == Type::Uint32 as i32 => format!(
-            "{indent}{field_access} = buf.read_varint32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
+            "{indent}{field_access} = {buf_name}.read_varint32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
         ),
         t if t == Type::Uint64 as i32 => format!(
-            "{indent}{field_access} = buf.read_varint().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
+            "{indent}{field_access} = {buf_name}.read_varint().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
         ),
         t if t == Type::Bool as i32 => format!(
-            "{indent}{field_access} = buf.read_bool().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
+            "{indent}{field_access} = {buf_name}.read_bool().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
         ),
         // Enum: decode as i32
         _ => format!(
-            "{indent}{field_access} = buf.read_varint_i32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
+            "{indent}{field_access} = {buf_name}.read_varint_i32().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n"
         ),
     }
 }
@@ -267,9 +352,20 @@ struct FieldInfo<'a> {
     ftype: i32,
     is_repeated: bool,
     in_oneof: bool,
+    /// Whether a repeated packable field is encoded packed.
+    ///
+    /// An explicit `[packed = ...]` in the descriptor always wins. That is also
+    /// how `edition = "2023"` files express `features.repeated_field_encoding`:
+    /// `oxiproto-build` materialises the resolved feature into `options.packed`.
+    /// With no explicit flag the *file's* default applies — expanded for
+    /// proto2, packed for proto3 and Editions — matching what `protoc` emits.
+    is_packed: bool,
 }
 
-fn collect_fields(msg: &DescriptorProto) -> Result<Vec<FieldInfo<'_>>, CodegenError> {
+fn collect_fields(
+    msg: &DescriptorProto,
+    syntax: FileSyntax,
+) -> Result<Vec<FieldInfo<'_>>, CodegenError> {
     let mut result = Vec::new();
     for field in &msg.field {
         let name = field
@@ -284,6 +380,11 @@ fn collect_fields(msg: &DescriptorProto) -> Result<Vec<FieldInfo<'_>>, CodegenEr
         let label = field.label.unwrap_or(Label::Optional as i32);
         let is_repeated = label == Label::Repeated as i32;
         let in_oneof = field.oneof_index.is_some();
+        let is_packed = field
+            .options
+            .as_ref()
+            .and_then(|o| o.packed)
+            .unwrap_or_else(|| syntax.packs_repeated_by_default());
         result.push(FieldInfo {
             field,
             name,
@@ -291,6 +392,7 @@ fn collect_fields(msg: &DescriptorProto) -> Result<Vec<FieldInfo<'_>>, CodegenEr
             ftype,
             is_repeated,
             in_oneof,
+            is_packed,
         });
     }
     Ok(result)
@@ -304,11 +406,12 @@ fn emit_encoded_len_body(
     struct_name: &str,
     map_field_names: &std::collections::HashSet<String>,
     _oneof_names: &[String],
+    syntax: FileSyntax,
 ) -> Result<String, CodegenError> {
     let mut body = String::new();
     body.push_str("        let mut len = 0usize;\n");
 
-    let fields = collect_fields(msg)?;
+    let fields = collect_fields(msg, syntax)?;
     let mut emitted_oneofs: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for fi in &fields {
@@ -359,7 +462,15 @@ fn emit_encoded_len_body(
         }
 
         if fi.is_repeated {
-            if fi.ftype == Type::Message as i32 {
+            if is_group(fi.ftype) {
+                // Repeated group: start tag + body + end tag, no length prefix.
+                let tags = group_tag_len_expr(fi.number);
+                body.push_str(&format!("        for _item in &self.{} {{\n", fi.name));
+                body.push_str(&format!(
+                    "            len += {tags} + _item.encoded_len();\n"
+                ));
+                body.push_str("        }\n");
+            } else if fi.ftype == Type::Message as i32 {
                 // Repeated message: each element is tag + varint_len + encoded_len
                 let tag = tag_len_expr(fi.number, 2);
                 body.push_str(&format!("        for _item in &self.{} {{\n", fi.name));
@@ -376,7 +487,7 @@ fn emit_encoded_len_body(
                     "            len += {tag} + ::oxiproto_core::wire::varint::encoded_len_varint(_item.len() as u64) + _item.len();\n"
                 ));
                 body.push_str("        }\n");
-            } else if is_packable(fi.ftype) {
+            } else if is_packable(fi.ftype) && fi.is_packed {
                 // Packed repeated scalar
                 let tag = tag_len_expr(fi.number, 2); // packed = Len
                 body.push_str(&format!("        if !self.{}.is_empty() {{\n", fi.name));
@@ -389,7 +500,27 @@ fn emit_encoded_len_body(
                     "            len += {tag} + ::oxiproto_core::wire::varint::encoded_len_varint(_payload_len as u64) + _payload_len;\n"
                 ));
                 body.push_str("        }\n");
+            } else if is_packable(fi.ftype) {
+                // Expanded (unpacked) repeated scalar: one tag per element.
+                let tag = tag_len_expr(fi.number, wire_type_for_field(fi.ftype));
+                body.push_str(&format!("        for _v in &self.{} {{\n", fi.name));
+                body.push_str(&format!(
+                    "            len += {tag} + {};\n",
+                    packed_elem_len_expr(fi.ftype, "*_v")
+                ));
+                body.push_str("        }\n");
             }
+        } else if is_group(fi.ftype) {
+            // Singular group: Option<Box<T>> framed by start/end-group tags.
+            let tags = group_tag_len_expr(fi.number);
+            body.push_str(&format!(
+                "        if let Some(ref _msg) = self.{} {{\n",
+                fi.name
+            ));
+            body.push_str(&format!(
+                "            len += {tags} + _msg.encoded_len();\n"
+            ));
+            body.push_str("        }\n");
         } else if fi.ftype == Type::Message as i32 {
             // Singular message: Option<Box<T>>
             body.push_str(&format!(
@@ -550,9 +681,10 @@ fn val_field_len_expr(ftype: i32, value_expr: &str, tag_expr: &str) -> String {
 fn emit_encode_raw_body(
     msg: &DescriptorProto,
     map_field_names: &std::collections::HashSet<String>,
+    syntax: FileSyntax,
 ) -> Result<String, CodegenError> {
     let mut body = String::new();
-    let fields = collect_fields(msg)?;
+    let fields = collect_fields(msg, syntax)?;
     let mut emitted_oneofs: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for fi in &fields {
@@ -616,7 +748,19 @@ fn emit_encode_raw_body(
         }
 
         if fi.is_repeated {
-            if fi.ftype == Type::Message as i32 {
+            if is_group(fi.ftype) {
+                body.push_str(&format!("        for _item in &self.{} {{\n", fi.name));
+                body.push_str(&format!(
+                    "            let _ = buf.write_tag({}u32, ::oxiproto_core::wire::WireType::SGroup);\n",
+                    fi.number
+                ));
+                body.push_str("            _item.encode_raw(buf);\n");
+                body.push_str(&format!(
+                    "            let _ = buf.write_tag({}u32, ::oxiproto_core::wire::WireType::EGroup);\n",
+                    fi.number
+                ));
+                body.push_str("        }\n");
+            } else if fi.ftype == Type::Message as i32 {
                 body.push_str(&format!("        for _item in &self.{} {{\n", fi.name));
                 body.push_str(&format!(
                     "            let _ = buf.write_tag({}u32, ::oxiproto_core::wire::WireType::Len);\n",
@@ -642,6 +786,17 @@ fn emit_encode_raw_body(
                 ));
                 body.push_str("            buf.write_length_delimited(_item);\n");
                 body.push_str("        }\n");
+            } else if is_packable(fi.ftype) && !fi.is_packed {
+                // Expanded (unpacked) repeated: one tag per element.
+                let wtp = wire_type_path(wire_type_for_field(fi.ftype));
+                body.push_str(&format!("        for _v in &self.{} {{\n", fi.name));
+                body.push_str(&format!(
+                    "            let _ = buf.write_tag({}u32, {wtp});\n",
+                    fi.number
+                ));
+                let encode = encode_val_expr(fi.ftype, "*_v");
+                body.push_str(&format!("            {encode};\n"));
+                body.push_str("        }\n");
             } else if is_packable(fi.ftype) {
                 // Packed repeated
                 body.push_str(&format!("        if !self.{}.is_empty() {{\n", fi.name));
@@ -661,6 +816,21 @@ fn emit_encode_raw_body(
                 body.push_str("            }\n");
                 body.push_str("        }\n");
             }
+        } else if is_group(fi.ftype) {
+            body.push_str(&format!(
+                "        if let Some(ref _msg) = self.{} {{\n",
+                fi.name
+            ));
+            body.push_str(&format!(
+                "            let _ = buf.write_tag({}u32, ::oxiproto_core::wire::WireType::SGroup);\n",
+                fi.number
+            ));
+            body.push_str("            _msg.encode_raw(buf);\n");
+            body.push_str(&format!(
+                "            let _ = buf.write_tag({}u32, ::oxiproto_core::wire::WireType::EGroup);\n",
+                fi.number
+            ));
+            body.push_str("        }\n");
         } else if fi.ftype == Type::Message as i32 {
             body.push_str(&format!(
                 "        if let Some(ref _msg) = self.{} {{\n",
@@ -818,6 +988,7 @@ fn encode_map_val_expr(ftype: i32, expr: &str) -> String {
 fn emit_merge_body(
     msg: &DescriptorProto,
     map_field_names: &std::collections::HashSet<String>,
+    syntax: FileSyntax,
 ) -> Result<String, CodegenError> {
     let mut body = String::new();
     body.push_str("        loop {\n");
@@ -833,7 +1004,7 @@ fn emit_merge_body(
     body.push_str("            };\n");
     body.push_str("            match _tag.field_number {\n");
 
-    let fields = collect_fields(msg)?;
+    let fields = collect_fields(msg, syntax)?;
 
     // Collect oneof groups
     let mut oneof_field_sets: Vec<Vec<&FieldDescriptorProto>> =
@@ -858,11 +1029,33 @@ fn emit_merge_body(
 
         body.push_str(&format!("                {} => {{\n", fi.number));
         if fi.is_repeated {
-            if fi.ftype == Type::Message as i32 {
+            if is_group(fi.ftype) {
+                // A group body runs until the matching end-group tag rather
+                // than for a declared number of bytes; `read_group_body`
+                // consumes that terminator and hands back the body slice,
+                // which `nested` then decodes under the shared recursion
+                // budget.
+                body.push_str(&format!(
+                    "                    let _bytes = buf.read_group_body({}u32).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n",
+                    fi.number
+                ));
+                body.push_str("                    let mut _inner_buf = buf.nested(_bytes).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
+                body.push_str("                    let mut _new_item = Default::default();\n");
+                body.push_str("                    ::oxiproto_core::OxiMessage::merge(&mut _new_item, &mut _inner_buf)?;\n");
+                body.push_str(&format!(
+                    "                    self.{}.push(_new_item);\n",
+                    fi.name
+                ));
+            } else if fi.ftype == Type::Message as i32 {
                 body.push_str("                    let _bytes = buf.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
                 body.push_str("                    let mut _inner_buf = buf.nested(_bytes).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
-                // We can't call T::decode_raw here because we don't know the type name
-                // Instead, emit a placeholder that will require OxiMessage bound
+                // We can't call T::decode_raw here because codegen doesn't know
+                // the concrete type name at this point in body generation.
+                // This *is* the final emitted code (not a placeholder): it
+                // dispatches through the generic `OxiMessage::merge` trait
+                // method on a `Default::default()`-constructed instance, so
+                // the concrete type is resolved by the field's own type
+                // annotation on `self.<field>` instead of by name here.
                 body.push_str("                    let mut _new_item = Default::default();\n");
                 body.push_str("                    ::oxiproto_core::OxiMessage::merge(&mut _new_item, &mut _inner_buf)?;\n");
                 body.push_str(&format!(
@@ -881,7 +1074,8 @@ fn emit_merge_body(
                 body.push_str("                        let _packed = buf.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
                 body.push_str("                        let mut _pb = ::oxiproto_core::wire::DecodeBuffer::new(_packed);\n");
                 body.push_str("                        while !_pb.is_empty() {\n");
-                let decode = scalar_decode_stmts(fi.ftype, "_val", "                            ");
+                let decode =
+                    scalar_decode_stmts(fi.ftype, "_val", "                            ", "_pb");
                 body.push_str("                            let mut _val = Default::default();\n");
                 body.push_str(&decode);
                 body.push_str(&format!(
@@ -890,7 +1084,8 @@ fn emit_merge_body(
                 ));
                 body.push_str("                        }\n");
                 body.push_str("                    } else {\n");
-                let decode2 = scalar_decode_stmts(fi.ftype, "_val", "                        ");
+                let decode2 =
+                    scalar_decode_stmts(fi.ftype, "_val", "                        ", "buf");
                 body.push_str("                        let mut _val = Default::default();\n");
                 body.push_str(&decode2);
                 body.push_str(&format!(
@@ -899,8 +1094,15 @@ fn emit_merge_body(
                 ));
                 body.push_str("                    }\n");
             }
-        } else if fi.ftype == Type::Message as i32 {
-            body.push_str("                    let _bytes = buf.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
+        } else if is_message_like(fi.ftype) {
+            if is_group(fi.ftype) {
+                body.push_str(&format!(
+                    "                    let _bytes = buf.read_group_body({}u32).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n",
+                    fi.number
+                ));
+            } else {
+                body.push_str("                    let _bytes = buf.read_length_delimited().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
+            }
             body.push_str("                    let mut _inner_buf = buf.nested(_bytes).map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
             body.push_str(&format!(
                 "                    if self.{}.is_none() {{ self.{0} = Some(Default::default()); }}\n",
@@ -919,6 +1121,7 @@ fn emit_merge_body(
                 fi.ftype,
                 &format!("self.{}", fi.name),
                 "                    ",
+                "buf",
             );
             body.push_str(&decode);
         }
@@ -953,7 +1156,7 @@ fn emit_merge_body(
                     "                    self.{oname} = Some({variant}(_inner));\n"
                 ));
             } else {
-                let decode = scalar_decode_stmts(ftype, "_ov", "                    ");
+                let decode = scalar_decode_stmts(ftype, "_ov", "                    ", "buf");
                 body.push_str("                    let mut _ov = Default::default();\n");
                 body.push_str(&decode);
                 body.push_str(&format!(
@@ -1050,7 +1253,8 @@ fn emit_map_merge(
                 body.push_str("                        let _et = _eb.read_tag().map_err(::oxiproto_core::OxiProtoError::WireFormatError)?;\n");
                 body.push_str("                        match _et.field_number {\n");
                 body.push_str("                            1 => {\n");
-                let k_decode = scalar_decode_stmts(ktype, "_k", "                                ");
+                let k_decode =
+                    scalar_decode_stmts(ktype, "_k", "                                ", "_eb");
                 body.push_str(&k_decode);
                 body.push_str("                            }\n");
                 body.push_str("                            2 => {\n");
@@ -1060,7 +1264,7 @@ fn emit_map_merge(
                     body.push_str("                                ::oxiproto_core::OxiMessage::merge(&mut _v, &mut _vbuf)?;\n");
                 } else {
                     let v_decode =
-                        scalar_decode_stmts(vtype, "_v", "                                ");
+                        scalar_decode_stmts(vtype, "_v", "                                ", "_eb");
                     body.push_str(&v_decode);
                 }
                 body.push_str("                            }\n");
@@ -1079,9 +1283,9 @@ fn emit_map_merge(
 
 // ── clear emission ────────────────────────────────────────────────────────────
 
-fn emit_clear_body(msg: &DescriptorProto) -> Result<String, CodegenError> {
+fn emit_clear_body(msg: &DescriptorProto, syntax: FileSyntax) -> Result<String, CodegenError> {
     let mut body = String::new();
-    let fields = collect_fields(msg)?;
+    let fields = collect_fields(msg, syntax)?;
     let mut emitted_oneofs: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for fi in &fields {
@@ -1124,6 +1328,7 @@ pub fn emit_oxi_message_impl(
     struct_name: &str,
     file_package: &str,
     map_field_names: &std::collections::HashSet<String>,
+    syntax: FileSyntax,
 ) -> Result<String, CodegenError> {
     let oneof_names: Vec<String> = msg
         .oneof_decl
@@ -1132,10 +1337,10 @@ pub fn emit_oxi_message_impl(
         .collect();
 
     let encoded_len_body =
-        emit_encoded_len_body_v2(msg, struct_name, map_field_names, &oneof_names)?;
-    let encode_raw_body = emit_encode_raw_body(msg, map_field_names)?;
-    let merge_body = emit_merge_body(msg, map_field_names)?;
-    let clear_body = emit_clear_body(msg)?;
+        emit_encoded_len_body_v2(msg, struct_name, map_field_names, &oneof_names, syntax)?;
+    let encode_raw_body = emit_encode_raw_body(msg, map_field_names, syntax)?;
+    let merge_body = emit_merge_body(msg, map_field_names, syntax)?;
+    let clear_body = emit_clear_body(msg, syntax)?;
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -1192,12 +1397,13 @@ fn emit_encoded_len_body_v2(
     struct_name: &str,
     map_field_names: &std::collections::HashSet<String>,
     _oneof_names: &[String],
+    syntax: FileSyntax,
 ) -> Result<String, CodegenError> {
     let _ = struct_name;
     let mut body = String::new();
     body.push_str("        let mut len = 0usize;\n");
 
-    let fields = collect_fields(msg)?;
+    let fields = collect_fields(msg, syntax)?;
     let mut emitted_oneofs: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     // Collect oneof field sets
@@ -1256,7 +1462,14 @@ fn emit_encoded_len_body_v2(
         }
 
         if fi.is_repeated {
-            if fi.ftype == Type::Message as i32 {
+            if is_group(fi.ftype) {
+                let tags = group_tag_len_expr(fi.number);
+                body.push_str(&format!("        for _item in &self.{} {{\n", fi.name));
+                body.push_str(&format!(
+                    "            len += {tags} + _item.encoded_len();\n"
+                ));
+                body.push_str("        }\n");
+            } else if fi.ftype == Type::Message as i32 {
                 let tag = tag_len_expr(fi.number, 2);
                 body.push_str(&format!("        for _item in &self.{} {{\n", fi.name));
                 body.push_str("            let _item_len = _item.encoded_len();\n");
@@ -1271,7 +1484,7 @@ fn emit_encoded_len_body_v2(
                     "            len += {tag} + ::oxiproto_core::wire::varint::encoded_len_varint(_item.len() as u64) + _item.len();\n"
                 ));
                 body.push_str("        }\n");
-            } else if is_packable(fi.ftype) {
+            } else if is_packable(fi.ftype) && fi.is_packed {
                 let tag = tag_len_expr(fi.number, 2);
                 body.push_str(&format!("        if !self.{}.is_empty() {{\n", fi.name));
                 body.push_str(&format!(
@@ -1283,7 +1496,29 @@ fn emit_encoded_len_body_v2(
                     "            len += {tag} + ::oxiproto_core::wire::varint::encoded_len_varint(_payload_len as u64) + _payload_len;\n"
                 ));
                 body.push_str("        }\n");
+            } else if is_packable(fi.ftype) {
+                // Expanded (unpacked) repeated scalar: one tag per element, so
+                // the size has to be summed the same way `encode_raw` writes it
+                // — the packed formula would disagree with the bytes actually
+                // produced and corrupt any enclosing length prefix.
+                let elem_wt = wire_type_for_field(fi.ftype);
+                let tag = tag_len_expr(fi.number, elem_wt);
+                body.push_str(&format!(
+                    "        for _v in &self.{} {{\n            len += {tag} + {};\n        }}\n",
+                    fi.name,
+                    packed_elem_len_expr(fi.ftype, "*_v")
+                ));
             }
+        } else if is_group(fi.ftype) {
+            let tags = group_tag_len_expr(fi.number);
+            body.push_str(&format!(
+                "        if let Some(ref _msg) = self.{} {{\n",
+                fi.name
+            ));
+            body.push_str(&format!(
+                "            len += {tags} + _msg.encoded_len();\n"
+            ));
+            body.push_str("        }\n");
         } else if fi.ftype == Type::Message as i32 {
             body.push_str(&format!(
                 "        if let Some(ref _msg) = self.{} {{\n",

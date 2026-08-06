@@ -468,7 +468,7 @@ pub(crate) fn emit_json_impls(
                         .unwrap_or(vname);
                     let vtype = of.r#type.unwrap_or(Type::String as i32);
                     let vraw_type = of.type_name.as_deref().unwrap_or("");
-                    let val_expr = if vtype == Type::Message as i32 {
+                    let val_expr = if crate::message_impl::is_message_like(vtype) {
                         "_inner.to_json()".to_string()
                     } else if vtype == Type::Enum as i32 {
                         let enum_type_name = registry.resolve(file_package, vraw_type);
@@ -476,7 +476,7 @@ pub(crate) fn emit_json_impls(
                     } else {
                         scalar_to_json_expr(vtype, "*_val")
                     };
-                    if vtype == Type::Message as i32 {
+                    if crate::message_impl::is_message_like(vtype) {
                         out.push_str(&format!(
                             "                {oneof_type}::{variant}(_inner) => {{ _map.insert(\"{vjson_key}\".to_string(), {val_expr}); }}\n"
                         ));
@@ -502,7 +502,7 @@ pub(crate) fn emit_json_impls(
             out.push_str("            let mut _jmap = ::serde_json::Map::new();\n");
             out.push_str(&format!("            for (_mk, _mv) in &self.{fname} {{\n"));
             let key_str = map_key_to_string_expr(mei.key_ftype, "_mk");
-            let val_expr = if mei.val_ftype == Type::Message as i32 {
+            let val_expr = if crate::message_impl::is_message_like(mei.val_ftype) {
                 "_mv.to_json()".to_string()
             } else if mei.val_ftype == Type::Enum as i32 {
                 let enum_type_name = registry.resolve(file_package, &mei.val_type_name);
@@ -556,7 +556,7 @@ pub(crate) fn emit_json_impls(
 
         // Repeated fields
         if is_repeated {
-            if ftype == Type::Message as i32 {
+            if crate::message_impl::is_message_like(ftype) {
                 out.push_str(&format!("        if !self.{fname}.is_empty() {{\n"));
                 out.push_str(&format!(
                     "            let _arr: ::serde_json::Value = ::serde_json::Value::Array(self.{fname}.iter().map(|_item| _item.to_json()).collect());\n"
@@ -601,7 +601,7 @@ pub(crate) fn emit_json_impls(
         }
 
         // Singular message (Option<Box<T>>)
-        if ftype == Type::Message as i32 {
+        if crate::message_impl::is_message_like(ftype) {
             out.push_str(&format!("        if let Some(ref _v) = self.{fname} {{\n"));
             out.push_str(&format!(
                 "            _map.insert(\"{json_key}\".to_string(), _v.to_json());\n"
@@ -708,7 +708,7 @@ pub(crate) fn emit_json_impls(
                         out.push_str(
                             "                    if !matches!(_v, ::serde_json::Value::Null) {\n",
                         );
-                        if vtype == Type::Message as i32 {
+                        if crate::message_impl::is_message_like(vtype) {
                             let inner_type = registry.resolve(file_package, vraw_type);
                             out.push_str(&format!(
                                 "                        let _decoded = {inner_type}::from_json(_v)?;\n"
@@ -758,7 +758,7 @@ pub(crate) fn emit_json_impls(
                 out.push_str(&format!(
                     "                            let _parsed_key = {key_parse}?;\n"
                 ));
-                if mei.val_ftype == Type::Message as i32 {
+                if crate::message_impl::is_message_like(mei.val_ftype) {
                     let inner_type = registry.resolve(file_package, &mei.val_type_name);
                     out.push_str(&format!(
                         "                            let _parsed_val = {inner_type}::from_json(_mv_val)?;\n"
@@ -823,7 +823,7 @@ pub(crate) fn emit_json_impls(
                     "                    if let ::serde_json::Value::Array(_arr) = _v {\n",
                 );
                 out.push_str("                        for _item in _arr {\n");
-                if ftype == Type::Message as i32 {
+                if crate::message_impl::is_message_like(ftype) {
                     let inner_type = registry.resolve(file_package, raw_type_name);
                     out.push_str(&format!(
                         "                            _out.{fname}.push({inner_type}::from_json(_item)?);\n"
@@ -847,7 +847,7 @@ pub(crate) fn emit_json_impls(
         }
 
         // Singular message (Option<Box<T>>)
-        if ftype == Type::Message as i32 {
+        if crate::message_impl::is_message_like(ftype) {
             let pattern = build_match_pattern(json_key, fname, &mut arm_added_keys);
             if let Some(pat) = pattern {
                 let inner_type = registry.resolve(file_package, raw_type_name);

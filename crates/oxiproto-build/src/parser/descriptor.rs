@@ -19,6 +19,11 @@ use crate::parser::ast::{
     Edition, Enum, EnumValue, ExtendBlock, Field, FieldLabel, FieldType, ImportModifier, Message,
     OptionValue, ProtoFile, ProtoOption, Reserved, ReservedRangeTo, ScalarType, Service,
 };
+use crate::parser::descriptor_semantics::{
+    build_enum_options_with_features, build_enum_value_options_with_features,
+    build_field_options_for, build_file_options_with_features, build_message_options_with_features,
+    edition_label, edition_message_encoding_type, Semantics,
+};
 
 #[cfg(feature = "native-parser")]
 use crate::parser::{comments::CommentMap, span::LineTable};
@@ -56,7 +61,7 @@ fn extract_json_name_override(options: &[ProtoOption]) -> Option<String> {
 // Field options builder
 // ---------------------------------------------------------------------------
 
-fn build_field_options(options: &[ProtoOption]) -> Option<prost_types::FieldOptions> {
+pub(super) fn build_field_options(options: &[ProtoOption]) -> Option<prost_types::FieldOptions> {
     let mut deprecated = None;
     let mut packed = None;
     let mut uninterpreted: Vec<UninterpretedOption> = Vec::new();
@@ -281,7 +286,9 @@ fn build_uninterpreted_option(opt: &ProtoOption) -> Option<UninterpretedOption> 
 /// Does NOT set `map_entry` — that is done separately by the map-entry
 /// synthesis path. When merging with a pre-existing `MessageOptions` that
 /// carries `map_entry: Some(true)`, use `merge_message_options`.
-fn build_message_options(options: &[ProtoOption]) -> Option<prost_types::MessageOptions> {
+pub(super) fn build_message_options(
+    options: &[ProtoOption],
+) -> Option<prost_types::MessageOptions> {
     let mut deprecated = None;
     let mut uninterpreted: Vec<UninterpretedOption> = Vec::new();
     for opt in options {
@@ -306,7 +313,7 @@ fn build_message_options(options: &[ProtoOption]) -> Option<prost_types::Message
 // Enum options builder
 // ---------------------------------------------------------------------------
 
-fn build_enum_options(options: &[ProtoOption]) -> Option<prost_types::EnumOptions> {
+pub(super) fn build_enum_options(options: &[ProtoOption]) -> Option<prost_types::EnumOptions> {
     let mut deprecated = None;
     let mut allow_alias = None;
     let mut uninterpreted: Vec<UninterpretedOption> = Vec::new();
@@ -389,7 +396,7 @@ fn build_method_options(options: &[ProtoOption]) -> Option<prost_types::MethodOp
 // File options builder
 // ---------------------------------------------------------------------------
 
-fn build_file_options(options: &[ProtoOption]) -> Option<prost_types::FileOptions> {
+pub(super) fn build_file_options(options: &[ProtoOption]) -> Option<prost_types::FileOptions> {
     let mut java_package = None;
     let mut java_outer_classname = None;
     let mut go_package = None;
@@ -609,7 +616,7 @@ fn build_extension_fields(
     extends: &[ExtendBlock],
     pkg: Option<&str>,
     enum_fqns: &HashSet<String>,
-    is_proto2: bool,
+    sem: Semantics,
 ) -> Vec<FieldDescriptorProto> {
     let mut result = Vec::new();
     for eb in extends {
@@ -620,14 +627,18 @@ fn build_extension_fields(
             let default_value = extract_default_value(&field.options, is_msg);
             let json_name = extract_json_name_override(&field.options)
                 .unwrap_or_else(|| snake_to_camel_case(&field.name));
-            let label = match &field.label {
-                FieldLabel::Required => Label::Required as i32,
-                FieldLabel::Repeated => Label::Repeated as i32,
-                FieldLabel::Optional | FieldLabel::Singular => Label::Optional as i32,
+            // Extension fields are never members of a oneof, so neither proto2
+            // nor proto3 synthesises one here; only the label differs.
+            let field_sem = sem.child(&field.options);
+            let label = if sem.is_edition {
+                edition_label(field, field_sem.features)
+            } else {
+                match &field.label {
+                    FieldLabel::Required => Label::Required as i32,
+                    FieldLabel::Repeated => Label::Repeated as i32,
+                    FieldLabel::Optional | FieldLabel::Singular => Label::Optional as i32,
+                }
             };
-            // In proto2, optional extension fields do NOT get synthetic oneofs.
-            // Extensions are never in a oneof.
-            let _ = is_proto2; // used conceptually (no oneof for extension fields)
             let fdp = FieldDescriptorProto {
                 name: Some(field.name.clone()),
                 number: Some(field.number),
@@ -638,7 +649,7 @@ fn build_extension_fields(
                 default_value,
                 oneof_index: None,
                 json_name: Some(json_name),
-                options: build_field_options(&field.options),
+                options: build_field_options_for(field, field_sem, proto_type),
                 proto3_optional: None,
             };
             result.push(fdp);
@@ -672,9 +683,10 @@ pub fn build_file_descriptor_set(
 
 /// Determine whether `proto_file` uses proto2 field-presence semantics.
 ///
-/// Returns `true` only for `syntax = "proto2"`.  Edition 2023 and proto3 both
-/// return `false`; they share the same synthetic-oneof / LABEL_OPTIONAL rules.
-fn file_is_proto2(proto_file: &ProtoFile) -> bool {
+/// Returns `true` only for `syntax = "proto2"`.  Edition files answer `false`
+/// here and are handled by [`Semantics`] instead: their presence rules come
+/// from `features.field_presence`, not from a label keyword.
+pub(super) fn file_is_proto2(proto_file: &ProtoFile) -> bool {
     proto_file.syntax.as_deref() == Some("proto2")
 }
 
@@ -707,7 +719,7 @@ fn build_file_descriptor_proto(
     src: &str,
 ) -> FileDescriptorProto {
     let pkg = proto_file.package.as_deref().unwrap_or("");
-    let is_proto2 = file_is_proto2(proto_file);
+    let sem = Semantics::for_file(proto_file);
 
     // Build enum FQN set for type-kind disambiguation.
     let mut enum_fqns: HashSet<String> = HashSet::new();
@@ -722,12 +734,15 @@ fn build_file_descriptor_proto(
     let message_type: Vec<DescriptorProto> = proto_file
         .messages
         .iter()
-        .map(|msg| build_message_descriptor(msg, pkg, &[], &enum_fqns, is_proto2))
+        .map(|msg| build_message_descriptor(msg, pkg, &[], &enum_fqns, sem))
         .collect();
 
     // Build top-level enums.
-    let enum_type: Vec<EnumDescriptorProto> =
-        proto_file.enums.iter().map(build_enum_descriptor).collect();
+    let enum_type: Vec<EnumDescriptorProto> = proto_file
+        .enums
+        .iter()
+        .map(|en| build_enum_descriptor(en, sem))
+        .collect();
 
     // Build services.
     let service: Vec<ServiceDescriptorProto> = proto_file
@@ -741,7 +756,7 @@ fn build_file_descriptor_proto(
         &proto_file.extends,
         proto_file.package.as_deref(),
         &enum_fqns,
-        is_proto2,
+        sem,
     );
 
     // Dependencies from imports.
@@ -793,7 +808,7 @@ fn build_file_descriptor_proto(
         enum_type,
         service,
         extension,
-        options: build_file_options(&proto_file.options),
+        options: build_file_options_with_features(&proto_file.options, sem),
         source_code_info,
         syntax: file_syntax_string(proto_file),
     }
@@ -934,14 +949,16 @@ fn map_entry_message_name(field_name: &str) -> String {
 ///
 /// `scope` is the list of ancestor message names (for FQN construction of
 /// nested map-entry type_names).
-/// `is_proto2` controls whether `optional` fields get a synthetic oneof.
+/// `parent_sem` carries the enclosing scope's semantics; this message's own
+/// `option features.*` statements are layered on top before any field is built.
 fn build_message_descriptor(
     msg: &Message,
     pkg: &str,
     scope: &[&str],
     enum_fqns: &HashSet<String>,
-    is_proto2: bool,
+    parent_sem: Semantics,
 ) -> DescriptorProto {
+    let sem = parent_sem.child(&msg.options);
     // Scope INSIDE this message (used for map entry FQNs and nested recursion).
     let mut inner_scope: Vec<&str> = scope.to_vec();
     inner_scope.push(&msg.name);
@@ -981,7 +998,7 @@ fn build_message_descriptor(
             real_oneof_count,
             synthetic_oneofs: &mut synthetic_oneofs,
             extra_nested: &mut extra_nested,
-            is_proto2,
+            sem,
         };
         let entries = build_regular_field(field, &mut ctx);
         field_entries.extend(entries);
@@ -989,8 +1006,10 @@ fn build_message_descriptor(
 
     // Oneof member fields.
     for (oneof_idx, oneof) in msg.oneofs.iter().enumerate() {
+        // A `oneof` block is itself a feature scope; its members inherit from it.
+        let oneof_sem = sem.child(&oneof.options);
         for field in &oneof.fields {
-            let fdp = build_oneof_member_field(field, oneof_idx, enum_fqns);
+            let fdp = build_oneof_member_field(field, oneof_idx, enum_fqns, oneof_sem);
             field_entries.push((field.span.start, fdp));
         }
     }
@@ -1006,13 +1025,16 @@ fn build_message_descriptor(
     let mut nested_type: Vec<DescriptorProto> = msg
         .nested_messages
         .iter()
-        .map(|n| build_message_descriptor(n, pkg, &inner_scope, enum_fqns, is_proto2))
+        .map(|n| build_message_descriptor(n, pkg, &inner_scope, enum_fqns, sem))
         .collect();
     nested_type.extend(extra_nested);
 
     // Nested enum types.
-    let enum_type: Vec<EnumDescriptorProto> =
-        msg.nested_enums.iter().map(build_enum_descriptor).collect();
+    let enum_type: Vec<EnumDescriptorProto> = msg
+        .nested_enums
+        .iter()
+        .map(|en| build_enum_descriptor(en, sem))
+        .collect();
 
     let (reserved_range, reserved_name) = build_message_reserved(&msg.reserved);
 
@@ -1027,7 +1049,7 @@ fn build_message_descriptor(
         enum_type,
         extension_range,
         oneof_decl,
-        options: build_message_options(&msg.options),
+        options: build_message_options_with_features(&msg.options, sem),
         reserved_range,
         reserved_name,
     }
@@ -1045,7 +1067,7 @@ struct FieldBuildCtx<'a> {
     real_oneof_count: usize,
     synthetic_oneofs: &'a mut Vec<OneofDescriptorProto>,
     extra_nested: &'a mut Vec<DescriptorProto>,
-    is_proto2: bool,
+    sem: Semantics,
 }
 
 /// Build the `FieldDescriptorProto`(s) for a regular (non-oneof-member) field.
@@ -1054,8 +1076,9 @@ struct FieldBuildCtx<'a> {
 /// repeated synthetic field), but also produce a side-effect (map entry nested
 /// message pushed into `extra_nested`).
 ///
-/// `ctx.is_proto2` controls whether `optional` fields get a synthetic oneof
-/// (proto3 behaviour) or plain `LABEL_OPTIONAL` without one (proto2 behaviour).
+/// `ctx.sem` decides the presence/packing/framing rules: for a `syntax` file it
+/// only says whether `optional` needs a synthetic oneof, for an `edition` file
+/// it carries the resolved feature set.
 fn build_regular_field(
     field: &Field,
     ctx: &mut FieldBuildCtx<'_>,
@@ -1066,7 +1089,10 @@ fn build_regular_field(
     let real_oneof_count = ctx.real_oneof_count;
     let synthetic_oneofs = &mut ctx.synthetic_oneofs;
     let extra_nested = &mut ctx.extra_nested;
-    let is_proto2 = ctx.is_proto2;
+    let sem = ctx.sem;
+    let is_proto2 = sem.is_proto2;
+    // The field is its own feature scope, layered on the enclosing message.
+    let field_sem = sem.child(&field.options);
     match &field.ty {
         FieldType::Map { key, value } => {
             // Map field desugaring.
@@ -1136,7 +1162,7 @@ fn build_regular_field(
                 default_value: None,
                 oneof_index: None,
                 json_name: Some(json_name),
-                options: build_field_options(&field.options),
+                options: build_field_options_for(field, field_sem, Type::Message),
                 proto3_optional: None,
             };
             vec![(field.span.start, fdp)]
@@ -1155,7 +1181,7 @@ fn build_regular_field(
             let (proto_type, type_name) = field_type_to_proto_kind(&field.ty, enum_fqns);
             let json_name = extract_json_name_override(&field.options)
                 .unwrap_or_else(|| capitalize_first(&field.name));
-            let field_opts = build_field_options(&field.options);
+            let field_opts = build_field_options_for(field, field_sem, proto_type);
 
             let label = match &field.label {
                 FieldLabel::Repeated => Label::Repeated as i32,
@@ -1181,11 +1207,36 @@ fn build_regular_field(
 
         FieldType::Scalar(_) | FieldType::Named(_) => {
             let (proto_type, type_name) = field_type_to_proto_kind(&field.ty, enum_fqns);
+            // `features.message_encoding = DELIMITED` re-frames a message field
+            // with start/end-group tags instead of a length prefix. That is
+            // exactly the proto2 group encoding, which the legacy descriptor
+            // spells TYPE_GROUP — so the resolved feature is materialised into
+            // the field's type rather than left as an uninterpreted note.
+            let proto_type = edition_message_encoding_type(proto_type, field_sem);
             let json_name = extract_json_name_override(&field.options)
                 .unwrap_or_else(|| snake_to_camel_case(&field.name));
-            let field_opts = build_field_options(&field.options);
+            let field_opts = build_field_options_for(field, field_sem, proto_type);
             let is_msg = matches!(field.ty, FieldType::Named(_));
             let default_value = extract_default_value(&field.options, is_msg);
+
+            if sem.is_edition {
+                // Editions have no label keywords: presence is a feature, and
+                // `repeated` is the only surviving modifier.
+                let fdp = FieldDescriptorProto {
+                    name: Some(field.name.clone()),
+                    number: Some(field.number),
+                    label: Some(edition_label(field, field_sem.features)),
+                    r#type: Some(proto_type as i32),
+                    type_name,
+                    extendee: None,
+                    default_value,
+                    oneof_index: None,
+                    json_name: Some(json_name),
+                    options: field_opts,
+                    proto3_optional: None,
+                };
+                return vec![(field.span.start, fdp)];
+            }
 
             match &field.label {
                 FieldLabel::Repeated => {
@@ -1292,8 +1343,11 @@ fn build_oneof_member_field(
     field: &Field,
     oneof_idx: usize,
     enum_fqns: &HashSet<String>,
+    oneof_sem: Semantics,
 ) -> FieldDescriptorProto {
+    let field_sem = oneof_sem.child(&field.options);
     let (proto_type, type_name) = field_type_to_proto_kind(&field.ty, enum_fqns);
+    let proto_type = edition_message_encoding_type(proto_type, field_sem);
     let json_name = extract_json_name_override(&field.options)
         .unwrap_or_else(|| snake_to_camel_case(&field.name));
     FieldDescriptorProto {
@@ -1306,7 +1360,7 @@ fn build_oneof_member_field(
         default_value: None,
         oneof_index: Some(oneof_idx as i32),
         json_name: Some(json_name),
-        options: build_field_options(&field.options),
+        options: build_field_options_for(field, field_sem, proto_type),
         proto3_optional: None,
     }
 }
@@ -1348,23 +1402,28 @@ fn field_type_to_proto_kind(ft: &FieldType, enum_fqns: &HashSet<String>) -> (Typ
 // Enum descriptor builder
 // ---------------------------------------------------------------------------
 
-fn build_enum_descriptor(en: &Enum) -> EnumDescriptorProto {
-    let value: Vec<EnumValueDescriptorProto> = en.values.iter().map(build_enum_value).collect();
+fn build_enum_descriptor(en: &Enum, parent_sem: Semantics) -> EnumDescriptorProto {
+    let sem = parent_sem.child(&en.options);
+    let value: Vec<EnumValueDescriptorProto> = en
+        .values
+        .iter()
+        .map(|ev| build_enum_value(ev, sem))
+        .collect();
     let (reserved_range, reserved_name) = build_enum_reserved(&en.reserved);
     EnumDescriptorProto {
         name: Some(en.name.clone()),
         value,
-        options: build_enum_options(&en.options),
+        options: build_enum_options_with_features(&en.options, sem),
         reserved_range,
         reserved_name,
     }
 }
 
-fn build_enum_value(ev: &EnumValue) -> EnumValueDescriptorProto {
+fn build_enum_value(ev: &EnumValue, parent_sem: Semantics) -> EnumValueDescriptorProto {
     EnumValueDescriptorProto {
         name: Some(ev.name.clone()),
         number: Some(ev.number),
-        options: None,
+        options: build_enum_value_options_with_features(&ev.options, parent_sem.child(&ev.options)),
     }
 }
 
@@ -1632,18 +1691,21 @@ pub(crate) fn build_file_descriptor_proto_with_global_enums(
     src: &str,
 ) -> FileDescriptorProto {
     let pkg = proto_file.package.as_deref().unwrap_or("");
-    let is_proto2 = file_is_proto2(proto_file);
+    let sem = Semantics::for_file(proto_file);
 
     // Build top-level messages.
     let message_type: Vec<DescriptorProto> = proto_file
         .messages
         .iter()
-        .map(|msg| build_message_descriptor(msg, pkg, &[], global_enum_fqns, is_proto2))
+        .map(|msg| build_message_descriptor(msg, pkg, &[], global_enum_fqns, sem))
         .collect();
 
     // Build top-level enums.
-    let enum_type: Vec<EnumDescriptorProto> =
-        proto_file.enums.iter().map(build_enum_descriptor).collect();
+    let enum_type: Vec<EnumDescriptorProto> = proto_file
+        .enums
+        .iter()
+        .map(|en| build_enum_descriptor(en, sem))
+        .collect();
 
     // Build services.
     let service: Vec<ServiceDescriptorProto> = proto_file
@@ -1657,7 +1719,7 @@ pub(crate) fn build_file_descriptor_proto_with_global_enums(
         &proto_file.extends,
         proto_file.package.as_deref(),
         global_enum_fqns,
-        is_proto2,
+        sem,
     );
 
     // Dependencies from imports.
@@ -1700,7 +1762,7 @@ pub(crate) fn build_file_descriptor_proto_with_global_enums(
         enum_type,
         service,
         extension,
-        options: build_file_options(&proto_file.options),
+        options: build_file_options_with_features(&proto_file.options, sem),
         source_code_info,
         syntax: file_syntax_string(proto_file),
     }

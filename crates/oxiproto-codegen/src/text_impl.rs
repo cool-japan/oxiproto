@@ -286,7 +286,7 @@ pub(crate) fn emit_text_format_impl(
             let ftype = member.ftype;
             let raw_type_name = &member.raw_type_name;
 
-            let is_message = ftype == Type::Message as i32;
+            let is_message = crate::message_impl::is_message_like(ftype);
             let is_wkt = !raw_type_name.is_empty() && is_wkt_leaf(raw_type_name);
 
             if is_message && !is_wkt {
@@ -349,7 +349,7 @@ fn emit_regular_field(
     raw_type_name: &str,
     repeated: bool,
 ) -> Result<(), CodegenError> {
-    let is_message = ftype == Type::Message as i32;
+    let is_message = crate::message_impl::is_message_like(ftype);
     let is_wkt = !raw_type_name.is_empty() && is_wkt_leaf(raw_type_name);
 
     if repeated {

@@ -1,0 +1,13 @@
+# rustfmt.toml — pinned formatting configuration for the OxiProto workspace.
+#
+# Deliberately minimal: the codebase already conforms to rustfmt's stable
+# defaults (verified via `cargo fmt --all -- --check` with *no* config file
+# at all before this file was added), so this file exists to pin `edition`
+# explicitly rather than to change any formatting behaviour. Adding settings
+# here that diverge from rustfmt's actual defaults would trigger a
+# repo-wide reformat, which is out of scope for a hygiene change.
+#
+# `edition` matches `[workspace.package].edition` in Cargo.toml. `cargo fmt`
+# already infers this per-crate from each Cargo.toml, but pin it here too so
+# a direct `rustfmt` invocation (outside `cargo fmt`) uses the same rules.
+edition = "2021"

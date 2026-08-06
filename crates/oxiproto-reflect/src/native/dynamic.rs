@@ -62,16 +62,30 @@ impl DynamicMessage {
         &mut self.unknown
     }
 
-    /// Returns `true` if the field is explicitly set to a non-default value.
+    /// Whether `field` must appear in a serialization of this message.
     ///
-    /// For proto3 singular scalar fields, a value equal to the type default is
-    /// considered *not* present. For message, repeated, and map fields,
-    /// presence means the entry exists and is non-empty.
-    pub fn has_field(&self, field: &FieldDescriptor) -> bool {
+    /// A field that was never set is never serialized. A field that *was* set
+    /// is serialized unless it has no presence and holds the type default —
+    /// the proto3 (and `features.field_presence = IMPLICIT`) omission rule.
+    pub(crate) fn should_serialize(&self, field: &FieldDescriptor) -> bool {
         match self.fields.get(&field.number()) {
             None => false,
-            Some(v) => !is_field_value_default(field, v),
+            Some(v) => !should_omit_when_default(field, v),
         }
+    }
+
+    /// Returns `true` if the field is set, using the schema's presence rules.
+    ///
+    /// A field with presence — proto2 `optional`, proto3 `optional`, a oneof
+    /// member, a message field, or an edition field whose resolved
+    /// `features.field_presence` is `EXPLICIT` — is present as soon as it has
+    /// been set, even to the type default. A field *without* presence (proto3
+    /// singular, `features.field_presence = IMPLICIT`) is present only when its
+    /// value differs from the default, and repeated/map fields only when
+    /// non-empty. This is exactly the predicate the wire, JSON, and text
+    /// encoders use, so `has_field` and "appears in the output" never disagree.
+    pub fn has_field(&self, field: &FieldDescriptor) -> bool {
+        self.should_serialize(field)
     }
 
     /// Get the value of a field, returning the field's default (as an owned
@@ -180,8 +194,30 @@ pub(crate) fn default_scalar_value(kind: Kind) -> Value {
     }
 }
 
+/// Whether a set field may be omitted from a serialization because its value
+/// equals the type default.
+///
+/// Only a field *without* presence may be omitted. For a proto2 `optional`, a
+/// proto3 `optional`, a oneof member, or an edition field whose resolved
+/// `features.field_presence` is `EXPLICIT`, "set to zero" and "unset" are
+/// distinct states, so the zero has to be serialized. Repeated and map fields
+/// have no presence and keep the historical "omit when empty" behaviour.
+pub(crate) fn should_omit_when_default(field: &FieldDescriptor, value: &Value) -> bool {
+    // A singular message/group is present only when it actually holds a
+    // message; the "absent" placeholder must never reach an encoder.
+    if matches!(field.kind(), Kind::Message(_) | Kind::Group(_))
+        && !matches!(field.cardinality(), Cardinality::Repeated)
+    {
+        return !matches!(value, Value::Message(_));
+    }
+    if field.has_presence() {
+        return false;
+    }
+    is_field_value_default(field, value)
+}
+
 /// Returns `true` if `value` is the default for the given field (used by
-/// `has_field` and proto3 default-omission on encode).
+/// `has_field` and default-omission on encode).
 pub(crate) fn is_field_value_default(field: &FieldDescriptor, value: &Value) -> bool {
     match field.cardinality() {
         Cardinality::Repeated => match value {

@@ -83,6 +83,10 @@ pub use prost_reflect::ReflectMessage;
 
 pub mod dynamic;
 
+pub mod editions;
+
+pub use editions::{downlevel_editions, has_editions_file, is_editions_file};
+
 pub use dynamic::{clear_field, get_field_by_name, has_field, set_field_by_name, unknown_fields};
 
 pub mod native;
@@ -157,6 +161,8 @@ impl From<ReflectError> for oxiproto_core::OxiProtoError {
 /// `prost_build::Config::file_descriptor_set_path`, or constructed
 /// programmatically in tests.
 ///
+/// A Protobuf Editions descriptor set is accepted: see [`pool_from_fds`].
+///
 /// # Errors
 ///
 /// Returns [`ReflectError::Decode`] if `fds_bytes` cannot be decoded as a
@@ -164,7 +170,7 @@ impl From<ReflectError> for oxiproto_core::OxiProtoError {
 /// fails (e.g. missing imports or invalid descriptors).
 pub fn pool_from_fds_bytes(fds_bytes: &[u8]) -> Result<DescriptorPool, ReflectError> {
     let fds = FileDescriptorSet::decode(fds_bytes).map_err(ReflectError::Decode)?;
-    DescriptorPool::from_file_descriptor_set(fds).map_err(|e| ReflectError::Pool(e.to_string()))
+    pool_from_fds(fds)
 }
 
 /// Build a [`DescriptorPool`] directly from a [`FileDescriptorSet`].
@@ -172,11 +178,21 @@ pub fn pool_from_fds_bytes(fds_bytes: &[u8]) -> Result<DescriptorPool, ReflectEr
 /// Unlike [`pool_from_fds_bytes`], this function accepts the already-decoded
 /// struct and avoids the bytes round-trip.
 ///
+/// A descriptor set produced from an `edition = "20XX";` source is accepted:
+/// `prost-reflect` itself only understands `proto2` and `proto3`, so such files
+/// are first rewritten into their proto2 equivalent by
+/// [`downlevel_editions`]. See the [`editions`] module for the mapping and its
+/// one known divergence.
+///
 /// # Errors
 ///
 /// Returns [`ReflectError::Pool`] if the pool construction fails (e.g. missing
 /// imports or invalid descriptors).
 pub fn pool_from_fds(fds: FileDescriptorSet) -> Result<DescriptorPool, ReflectError> {
+    // `prost-reflect` only knows `proto2` and `proto3`; a Protobuf Editions
+    // descriptor set is rewritten into its proto2 equivalent first. Files that
+    // already declare a `syntax` pass through unchanged.
+    let fds = editions::downlevel_editions(fds);
     DescriptorPool::from_file_descriptor_set(fds).map_err(|e| ReflectError::Pool(e.to_string()))
 }
 

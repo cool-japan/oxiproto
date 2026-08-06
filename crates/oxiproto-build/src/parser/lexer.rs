@@ -359,24 +359,26 @@ impl<'a> Lexer<'a> {
                         Span::new(start, self.pos),
                     ));
                 }
-                _ => {
-                    // Safe: we just verified peek_byte() is Some, and advance()
-                    // returns the byte we're consuming.
-                    let b = self.advance().expect("advance after peek");
-                    // All proto string bytes are valid UTF-8 (the source is &str).
-                    // Multi-byte UTF-8 sequences arrive as multiple advances;
-                    // we need to decode them properly.
-                    // Instead of byte-by-byte pushing, slice out the char.
-                    let ch_start = self.pos - 1;
-                    // Recalculate: we advanced 1 byte; check if it's a multi-byte leader.
-                    let _ = b; // silence unused warning; we use char-boundary logic below.
-                               // Back up and use char-boundary safe slicing.
-                    let char_pos = ch_start;
-                    // `self.input` is valid UTF-8; find the char starting at char_pos.
-                    let ch = self.input[char_pos..]
-                        .chars()
-                        .next()
-                        .expect("valid utf-8 in source");
+                Some(_) => {
+                    // `self.peek_byte()` above already confirmed there is a byte
+                    // here, so this just consumes it; the byte value itself is
+                    // unused because multi-byte UTF-8 sequences are decoded via
+                    // char-boundary-safe slicing below rather than byte-by-byte.
+                    let ch_start = self.pos;
+                    self.advance();
+                    // `self.input` is valid UTF-8 (it's a `&str`) and `ch_start`
+                    // is a char boundary because the lexer only ever advances by
+                    // whole chars, but decode defensively via `str::get` (which
+                    // returns `None` instead of panicking on a bad boundary or
+                    // out-of-range index) rather than asserting the invariant
+                    // with an indexing operation that would panic outright.
+                    let ch = self
+                        .input
+                        .get(ch_start..)
+                        .and_then(|s| s.chars().next())
+                        .ok_or(LexError::UnterminatedString {
+                            span: Span::new(start, self.pos),
+                        })?;
                     let ch_len = ch.len_utf8();
                     // We already advanced 1 byte; advance the remaining ch_len - 1 bytes.
                     for _ in 1..ch_len {
@@ -452,11 +454,16 @@ impl<'a> Lexer<'a> {
                     // Octal with leading 0: collect up to 2 more digits.
                     let mut val: u32 = 0; // leading 0 already consumed
                     for _ in 0..2 {
-                        if self.peek_byte().is_some_and(is_octal_digit) {
-                            let d = self.advance().expect("peeked") - b'0';
-                            val = val * 8 + u32::from(d);
-                        } else {
-                            break;
+                        // Match on the peeked byte directly (rather than
+                        // peeking then calling `advance()` separately and
+                        // asserting it agrees) so the digit value comes from
+                        // the same read that decides whether to consume it.
+                        match self.peek_byte() {
+                            Some(d) if is_octal_digit(d) => {
+                                self.advance();
+                                val = val * 8 + u32::from(d - b'0');
+                            }
+                            _ => break,
                         }
                     }
                     char::from_u32(val).ok_or(LexError::InvalidUnicodeEscape {
@@ -471,11 +478,15 @@ impl<'a> Lexer<'a> {
                 let mut val: u32 = u32::from(b - b'0');
                 self.advance(); // consume first digit
                 for _ in 0..2 {
-                    if self.peek_byte().is_some_and(is_octal_digit) {
-                        let d = self.advance().expect("peeked") - b'0';
-                        val = val * 8 + u32::from(d);
-                    } else {
-                        break;
+                    // See the leading-zero octal arm above for why this reads
+                    // the digit from the match instead of an `advance()`
+                    // that's `.expect()`-asserted to agree with the peek.
+                    match self.peek_byte() {
+                        Some(d) if is_octal_digit(d) => {
+                            self.advance();
+                            val = val * 8 + u32::from(d - b'0');
+                        }
+                        _ => break,
                     }
                 }
                 char::from_u32(val).ok_or(LexError::InvalidUnicodeEscape {

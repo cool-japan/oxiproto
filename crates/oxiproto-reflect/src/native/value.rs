@@ -33,6 +33,18 @@ pub enum Value {
     Bool(bool),
     /// A `string` value.
     String(String),
+    /// A `string` field's payload that is **not** valid UTF-8.
+    ///
+    /// Only produced when the field's resolved `features.utf8_validation` is
+    /// `NONE` — the Editions baseline for proto2 files, and whatever an
+    /// `edition` file asks for. `VERIFY` (the proto3 and Editions default)
+    /// rejects the payload at decode time instead, so this variant can never
+    /// appear for such a field.
+    ///
+    /// The raw bytes are preserved verbatim so that a decode → encode round
+    /// trip is byte-identical; lossy text is available through
+    /// [`Value::as_str_lossy`] for display purposes.
+    UnvalidatedString(Vec<u8>),
     /// A `bytes` value.
     Bytes(Vec<u8>),
     /// An enum value, stored as its integer number.
@@ -80,6 +92,7 @@ impl Value {
             Value::U64(v) => *v == 0,
             Value::Bool(v) => !*v,
             Value::String(s) => s.is_empty(),
+            Value::UnvalidatedString(b) => b.is_empty(),
             Value::Bytes(b) => b.is_empty(),
             Value::EnumNumber(n) => *n == 0,
             Value::Message(_) => false,
@@ -156,6 +169,33 @@ impl Value {
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
             Value::Bytes(b) => Some(b.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Borrow the raw bytes of a `string`-typed value.
+    ///
+    /// Returns the UTF-8 bytes of a [`Value::String`] and the unvalidated
+    /// payload of a [`Value::UnvalidatedString`]; `None` for anything else.
+    /// This is what the wire encoder writes, so both spellings of a `string`
+    /// field round-trip byte-identically.
+    pub fn as_string_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Value::String(s) => Some(s.as_bytes()),
+            Value::UnvalidatedString(b) => Some(b.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Render a `string`-typed value as text, replacing any invalid UTF-8
+    /// sequence with U+FFFD.
+    ///
+    /// Returns `None` for values that are not `string`-typed. Use
+    /// [`Value::as_str`] when only a genuinely valid string will do.
+    pub fn as_str_lossy(&self) -> Option<std::borrow::Cow<'_, str>> {
+        match self {
+            Value::String(s) => Some(std::borrow::Cow::Borrowed(s.as_str())),
+            Value::UnvalidatedString(b) => Some(String::from_utf8_lossy(b)),
             _ => None,
         }
     }

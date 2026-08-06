@@ -35,12 +35,23 @@
 use std::sync::Arc;
 
 use super::descriptor::{Cardinality, FieldDescriptor, Kind, MessageDescriptor};
-use super::dynamic::{is_field_value_default, DynamicMessage};
+use super::dynamic::DynamicMessage;
 use super::value::{MapKey, Value};
 
 // ---------------------------------------------------------------------------
 // Public error type
 // ---------------------------------------------------------------------------
+
+/// Maximum message nesting depth accepted by the text-format parser and
+/// emitted by the text-format encoder.
+///
+/// Without a bound, a payload such as `f{f{f{…}}}` (or the `<…>` form) nested
+/// a few hundred thousand levels deep would overflow the stack before any
+/// application code observed the input. The value is the text-format analogue
+/// of [`oxiproto_core::wire::MAX_DECODE_DEPTH`] and matches the de-facto
+/// protobuf norm used by `protobuf`'s `io::CodedInputStream` and prost's
+/// `RECURSION_LIMIT`.
+pub const MAX_TEXT_DEPTH: u32 = 100;
 
 /// Errors produced during protobuf text-format conversion.
 #[derive(Debug)]
@@ -49,6 +60,15 @@ pub enum TextError {
     Parse(String),
     /// Schema mismatch between the text and the message descriptor.
     Schema(String),
+    /// The message nesting depth exceeded [`MAX_TEXT_DEPTH`].
+    ///
+    /// Returned instead of recursing further, so that a maliciously deep
+    /// text-format payload (or an over-deep in-memory message being
+    /// serialised) cannot overflow the stack.
+    RecursionLimitExceeded {
+        /// The depth limit that was reached.
+        limit: u32,
+    },
 }
 
 impl std::fmt::Display for TextError {
@@ -56,6 +76,9 @@ impl std::fmt::Display for TextError {
         match self {
             TextError::Parse(s) => write!(f, "text format parse error: {s}"),
             TextError::Schema(s) => write!(f, "schema error: {s}"),
+            TextError::RecursionLimitExceeded { limit } => {
+                write!(f, "text format nesting depth exceeded the limit of {limit}")
+            }
         }
     }
 }
@@ -79,8 +102,10 @@ impl DynamicMessage {
     ///
     /// # Errors
     ///
-    /// Returns [`TextError`] if encoding fails (e.g. an unsupported group
-    /// field is encountered).
+    /// Returns [`TextError`] if a field's stored value does not match its
+    /// descriptor, or [`TextError::RecursionLimitExceeded`] if the message nests
+    /// deeper than [`MAX_TEXT_DEPTH`]. Groups are emitted like nested messages,
+    /// using the group field's name.
     pub fn to_text(&self) -> Result<String, TextError> {
         let mut out = String::new();
         encode_message(self, &mut out, 0)?;
@@ -96,10 +121,11 @@ impl DynamicMessage {
     /// # Errors
     ///
     /// Returns [`TextError`] if the input cannot be parsed or does not match
-    /// the schema.
+    /// the schema, or [`TextError::RecursionLimitExceeded`] if the input nests
+    /// sub-messages deeper than [`MAX_TEXT_DEPTH`].
     pub fn from_text(desc: MessageDescriptor, text: &str) -> Result<Self, TextError> {
         let mut parser = Parser::new(text);
-        parser.parse_message(desc)
+        parser.parse_message(desc, 0)
     }
 }
 
@@ -110,14 +136,22 @@ impl DynamicMessage {
 const INDENT: &str = "  ";
 
 fn encode_message(msg: &DynamicMessage, out: &mut String, depth: usize) -> Result<(), TextError> {
+    // Bound the nesting depth exactly like the parser (and like the wire
+    // decoder's `DecodeBuffer::nested`): an over-deep in-memory message must
+    // produce a typed error, never a stack overflow.
+    if depth >= MAX_TEXT_DEPTH as usize {
+        return Err(TextError::RecursionLimitExceeded {
+            limit: MAX_TEXT_DEPTH,
+        });
+    }
     let desc = msg.descriptor();
     let prefix = INDENT.repeat(depth);
 
     for field in desc.fields() {
-        let value = msg.get_field(&field);
-        if is_field_value_default(&field, &value) {
+        if !msg.should_serialize(&field) {
             continue;
         }
+        let value = msg.get_field(&field);
         encode_field_value(&field, &value, &prefix, out, depth)?;
     }
     Ok(())
@@ -276,6 +310,26 @@ fn encode_scalar_value(
                     '\t' => out.push_str("\\t"),
                     '\0' => out.push_str("\\0"),
                     other => out.push(other),
+                }
+            }
+            out.push('"');
+        }
+        Value::UnvalidatedString(b) => {
+            // A `string` field whose resolved `features.utf8_validation` is
+            // NONE may hold arbitrary bytes. The text format has an escape for
+            // exactly this: printable ASCII stays literal, everything else
+            // becomes `\xNN`, so the output stays valid ASCII text and
+            // re-parses to the same bytes.
+            out.push('"');
+            for byte in b {
+                match byte {
+                    b'"' => out.push_str("\\\""),
+                    b'\\' => out.push_str("\\\\"),
+                    b'\n' => out.push_str("\\n"),
+                    b'\r' => out.push_str("\\r"),
+                    b'\t' => out.push_str("\\t"),
+                    0x20..=0x7e => out.push(char::from(*byte)),
+                    other => out.push_str(&format!("\\x{other:02x}")),
                 }
             }
             out.push('"');
@@ -467,7 +521,21 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_message(&mut self, desc: MessageDescriptor) -> Result<DynamicMessage, TextError> {
+    /// Parse the body of a message.
+    ///
+    /// `depth` is the current nesting level (0 for the top-level message) and
+    /// is passed **by value** so that sibling sub-messages never accumulate
+    /// budget; only genuine nesting does.
+    fn parse_message(
+        &mut self,
+        desc: MessageDescriptor,
+        depth: u32,
+    ) -> Result<DynamicMessage, TextError> {
+        if depth >= MAX_TEXT_DEPTH {
+            return Err(TextError::RecursionLimitExceeded {
+                limit: MAX_TEXT_DEPTH,
+            });
+        }
         let mut msg = DynamicMessage::new(desc.clone());
         loop {
             self.skip_ws();
@@ -512,9 +580,9 @@ impl<'a> Parser<'a> {
                     }
                     if self.peek() == Some(b'<') {
                         // Angle-bracket message syntax (alternative to braces).
-                        self.parse_angle_message(field.clone())?
+                        self.parse_angle_message(field.clone(), depth)?
                     } else {
-                        self.parse_brace_message(field.clone())?
+                        self.parse_brace_message(field.clone(), depth)?
                     }
                 } else {
                     self.expect(':')?;
@@ -566,17 +634,26 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a brace-delimited sub-message: `{ ... }`.
-    fn parse_brace_message(&mut self, field: FieldDescriptor) -> Result<Value, TextError> {
+    ///
+    /// `depth` is the nesting level of the *enclosing* message; the sub-message
+    /// is parsed at `depth + 1`.
+    fn parse_brace_message(
+        &mut self,
+        field: FieldDescriptor,
+        depth: u32,
+    ) -> Result<Value, TextError> {
         if field.is_map() {
-            return self.parse_map_entry(field);
+            return self.parse_map_entry(field, depth);
         }
-        if let Kind::Message(msg_index) = field.kind() {
+        // A group is structurally a synthetic message and uses the same
+        // brace-delimited text syntax.
+        if let Kind::Message(msg_index) | Kind::Group(msg_index) = field.kind() {
             self.expect('{')?;
             let msg_desc = MessageDescriptor {
                 pool: Arc::clone(&field.pool),
                 index: msg_index,
             };
-            let nested = self.parse_message(msg_desc)?;
+            let nested = self.parse_message(msg_desc, depth.saturating_add(1))?;
             self.expect('}')?;
             Ok(Value::Message(Box::new(nested)))
         } else {
@@ -588,14 +665,21 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse an angle-bracket sub-message: `< ... >`.
-    fn parse_angle_message(&mut self, field: FieldDescriptor) -> Result<Value, TextError> {
-        if let Kind::Message(msg_index) = field.kind() {
+    ///
+    /// `depth` is the nesting level of the *enclosing* message; the sub-message
+    /// is parsed at `depth + 1`.
+    fn parse_angle_message(
+        &mut self,
+        field: FieldDescriptor,
+        depth: u32,
+    ) -> Result<Value, TextError> {
+        if let Kind::Message(msg_index) | Kind::Group(msg_index) = field.kind() {
             self.expect('<')?;
             let msg_desc = MessageDescriptor {
                 pool: Arc::clone(&field.pool),
                 index: msg_index,
             };
-            let nested = self.parse_message(msg_desc)?;
+            let nested = self.parse_message(msg_desc, depth.saturating_add(1))?;
             self.expect('>')?;
             Ok(Value::Message(Box::new(nested)))
         } else {
@@ -608,7 +692,10 @@ impl<'a> Parser<'a> {
 
     /// Parse a map entry `{ key: K  value: V }` and return a single-entry
     /// `Value::Map`.
-    fn parse_map_entry(&mut self, field: FieldDescriptor) -> Result<Value, TextError> {
+    ///
+    /// `depth` is the nesting level of the *enclosing* message; a message-typed
+    /// map value is parsed one level deeper.
+    fn parse_map_entry(&mut self, field: FieldDescriptor, depth: u32) -> Result<Value, TextError> {
         let key_field = field.map_entry_key_field().ok_or_else(|| {
             TextError::Schema(format!(
                 "map field '{}' missing key descriptor",
@@ -645,7 +732,10 @@ impl<'a> Parser<'a> {
                             self.pos += 1;
                             self.skip_ws();
                         }
-                        self.parse_brace_message(val_field.clone())?
+                        // The synthetic map-entry message itself occupies one
+                        // nesting level, so the value message starts one
+                        // deeper than the enclosing message.
+                        self.parse_brace_message(val_field.clone(), depth.saturating_add(1))?
                     } else {
                         self.expect(':')?;
                         self.parse_scalar_value(&val_field)?
@@ -691,6 +781,19 @@ impl<'a> Parser<'a> {
                 Kind::Bytes => {
                     let raw = self.read_string_as_bytes()?;
                     Ok(Value::Bytes(raw))
+                }
+                // A `string` field whose resolved `features.utf8_validation` is
+                // NONE may carry arbitrary bytes, which `encode_scalar_value`
+                // writes with `\xNN` escapes. Reading them back the same way
+                // makes `to_text` → `from_text` a byte-exact round trip; the
+                // classification mirrors the wire decoder, so valid text still
+                // lands on `Value::String`.
+                Kind::String if !field.validates_utf8() => {
+                    let raw = self.read_string_as_bytes()?;
+                    Ok(match String::from_utf8(raw) {
+                        Ok(text) => Value::String(text),
+                        Err(e) => Value::UnvalidatedString(e.into_bytes()),
+                    })
                 }
                 _ => {
                     let s = self.read_string()?;
@@ -877,6 +980,12 @@ fn value_to_map_key(v: Value) -> Result<MapKey, TextError> {
         Value::U32(n) => Ok(MapKey::U32(n)),
         Value::U64(n) => Ok(MapKey::U64(n)),
         Value::Bool(b) => Ok(MapKey::Bool(b)),
+        // Only reachable with features.utf8_validation = NONE on the entry's
+        // key field: a map key must be usable as text, so an unvalidated
+        // payload cannot be admitted.
+        Value::UnvalidatedString(_) => {
+            Err(TextError::Schema("map key is not valid UTF-8".to_owned()))
+        }
         other => Err(TextError::Schema(format!(
             "invalid map key type: {other:?}"
         ))),

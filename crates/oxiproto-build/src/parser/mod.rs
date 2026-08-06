@@ -8,6 +8,7 @@
 
 pub mod ast;
 pub mod error;
+pub mod features;
 pub mod lexer;
 pub mod outline;
 pub mod parse;
@@ -19,6 +20,8 @@ pub mod comments;
 #[cfg(feature = "native-parser")]
 pub mod descriptor;
 #[cfg(feature = "native-parser")]
+mod descriptor_semantics;
+#[cfg(feature = "native-parser")]
 pub mod loader;
 #[cfg(feature = "native-parser")]
 pub mod resolve;
@@ -29,6 +32,10 @@ pub use ast::{
     ReservedRange, ReservedRangeTo, ScalarType, Service,
 };
 pub use error::{LexError, ParseError};
+pub use features::{
+    EnumType, FeatureOverrides, FeatureSet, FieldPresence, JsonFormat, MessageEncoding,
+    RepeatedFieldEncoding, Utf8Validation,
+};
 pub use lexer::Lexer;
 pub use outline::{parse_outline, FileOutline, TopLevelItem};
 pub use parse::parse_file;
@@ -37,5 +44,7 @@ pub use token::Token;
 
 #[cfg(feature = "native-parser")]
 pub use descriptor::build_file_descriptor_set;
+#[cfg(feature = "native-parser")]
+pub(crate) use descriptor_semantics::validate_descriptor_features;
 #[cfg(feature = "native-parser")]
 pub use resolve::resolve;

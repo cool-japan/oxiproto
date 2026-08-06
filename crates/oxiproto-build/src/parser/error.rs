@@ -95,13 +95,69 @@ pub enum ParseError {
     UnknownSyntax(String),
     /// The `edition` statement contained an unrecognised or unsupported value.
     ///
-    /// Currently only `"2023"` is accepted; any other edition string triggers
-    /// this error.
+    /// Only `"2023"` is accepted. Later editions are rejected rather than
+    /// approximated: an edition *is* its feature-default table, so compiling a
+    /// file against guessed defaults would emit a descriptor set that diverges
+    /// from `protoc` on the wire while appearing to succeed. See
+    /// [`Edition`](crate::parser::ast::Edition) for the specific blockers.
     UnsupportedEdition(String),
     /// Both `syntax` and `edition` were specified in the same file.
     SyntaxAndEditionConflict,
     /// A proto2 `group` field name does not start with an uppercase letter.
     MalformedGroupName { name: String, span: Span },
+    /// The source nested message / group / option-literal definitions deeper
+    /// than the parser's fixed budget.
+    ///
+    /// Returned instead of recursing further, so that a maliciously deep
+    /// `.proto` source (e.g. `message A{message B{message C{...}}}`) cannot
+    /// overflow the parser's stack.
+    NestingLimitExceeded { limit: u32, span: Span },
+    /// An `option features.<name>` named a feature this implementation does not
+    /// know (see [`crate::parser::features::KNOWN_FEATURES`]).
+    UnknownFeature {
+        /// The feature name, without the `features.` prefix.
+        name: String,
+        /// Where the offending option appeared.
+        span: Span,
+    },
+    /// A `features.<name>` option had a value that is not one of the feature's
+    /// enumerators (e.g. `features.field_presence = SOMETIMES`).
+    InvalidFeatureValue {
+        /// The feature name, without the `features.` prefix.
+        feature: String,
+        /// The rejected value, rendered for the diagnostic.
+        value: String,
+        /// Where the offending option appeared.
+        span: Span,
+    },
+    /// A `features.*` option appeared in a file that uses `syntax` rather than
+    /// `edition`.  Feature resolution only exists for Protobuf Editions.
+    FeaturesRequireEdition {
+        /// The feature name, without the `features.` prefix.
+        name: String,
+        /// Where the offending option appeared.
+        span: Span,
+    },
+    /// A feature was set on a declaration it cannot apply to (for example
+    /// `features.field_presence` on a `repeated` field).
+    FeatureNotApplicable {
+        /// The feature name, without the `features.` prefix.
+        feature: String,
+        /// Why the feature does not apply here.
+        reason: String,
+        /// Where the offending declaration appeared.
+        span: Span,
+    },
+    /// A construct that Protobuf Editions removed was used in an edition file
+    /// (the `optional` / `required` labels and `group` fields).
+    EditionSyntaxNotAllowed {
+        /// The removed construct, e.g. `"the 'required' label"`.
+        construct: &'static str,
+        /// The edition-native replacement.
+        hint: &'static str,
+        /// Where the offending declaration appeared.
+        span: Span,
+    },
 }
 
 impl std::fmt::Display for ParseError {
@@ -148,6 +204,62 @@ impl std::fmt::Display for ParseError {
                     f,
                     "proto2 group name must start with an uppercase letter: {:?} at byte offset {}",
                     name, span.start
+                )
+            }
+            ParseError::NestingLimitExceeded { limit, span } => {
+                write!(
+                    f,
+                    "nesting depth exceeded the limit of {limit} at byte offset {}",
+                    span.start
+                )
+            }
+            ParseError::UnknownFeature { name, span } => {
+                write!(
+                    f,
+                    "unknown edition feature 'features.{name}' at byte offset {}; known features: {}",
+                    span.start,
+                    crate::parser::features::KNOWN_FEATURES.join(", ")
+                )
+            }
+            ParseError::InvalidFeatureValue {
+                feature,
+                value,
+                span,
+            } => {
+                write!(
+                    f,
+                    "invalid value {value} for 'features.{feature}' at byte offset {}",
+                    span.start
+                )
+            }
+            ParseError::FeaturesRequireEdition { name, span } => {
+                write!(
+                    f,
+                    "'features.{name}' at byte offset {} requires an 'edition' file; \
+                     feature resolution does not apply to syntax = \"proto2\"/\"proto3\"",
+                    span.start
+                )
+            }
+            ParseError::FeatureNotApplicable {
+                feature,
+                reason,
+                span,
+            } => {
+                write!(
+                    f,
+                    "'features.{feature}' does not apply here at byte offset {}: {reason}",
+                    span.start
+                )
+            }
+            ParseError::EditionSyntaxNotAllowed {
+                construct,
+                hint,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{construct} was removed in Protobuf Editions (byte offset {}); {hint}",
+                    span.start
                 )
             }
         }

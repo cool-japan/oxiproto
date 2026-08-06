@@ -6,8 +6,10 @@
 //! scalars, `map<K, V>` as repeated synthetic entries, proto3 default
 //! omission, and unknown-field preservation.
 //!
-//! Groups (wire types 3/4) are explicitly rejected with
-//! [`ReflectError::Field`].
+//! Proto2 groups (wire types 3/4) are supported: a `group` field is encoded as
+//! a start-group tag, the body fields inline, then a matching end-group tag,
+//! and decoded back into the synthetic message the descriptor pool associates
+//! with the field. Unknown groups are preserved verbatim.
 
 use oxiproto_core::wire::{
     zigzag_decode32, zigzag_decode64, zigzag_encode32, zigzag_encode64, DecodeBuffer, EncodeBuffer,
@@ -15,7 +17,7 @@ use oxiproto_core::wire::{
 };
 
 use super::descriptor::{Cardinality, FieldDescriptor, Kind, MessageDescriptor};
-use super::dynamic::{default_scalar_value, is_field_value_default, DynamicMessage};
+use super::dynamic::{default_scalar_value, should_omit_when_default, DynamicMessage};
 use super::value::{MapKey, Value};
 use crate::ReflectError;
 
@@ -28,8 +30,8 @@ impl DynamicMessage {
     ///
     /// # Errors
     ///
-    /// Returns [`ReflectError::Field`] if the message (or a nested message)
-    /// contains a group-kind field, which is unsupported.
+    /// Returns [`ReflectError::Field`] if a field's stored value does not match
+    /// its descriptor kind (e.g. a non-message value in a message/group field).
     pub fn encode_to_vec(&self) -> Result<Vec<u8>, ReflectError> {
         let mut buf = EncodeBuffer::new();
         self.encode(&mut buf)?;
@@ -45,7 +47,7 @@ impl DynamicMessage {
         for (field, value) in self.iter_fields() {
             // Skip singular fields whose value equals the default (proto3
             // omission). Repeated/map empties are also skipped.
-            if is_field_value_default(&field, value) {
+            if should_omit_when_default(&field, value) {
                 continue;
             }
             encode_field(buf, &field, value)?;
@@ -65,7 +67,8 @@ impl DynamicMessage {
     /// # Errors
     ///
     /// Returns [`ReflectError::Field`] on malformed wire data (propagated from
-    /// the wire layer) or if a group-kind field is encountered.
+    /// the wire layer), including a group that is not closed by a matching
+    /// end-group tag.
     pub fn decode(desc: MessageDescriptor, bytes: &[u8]) -> Result<Self, ReflectError> {
         let mut msg = DynamicMessage::new(desc);
         let mut dec = DecodeBuffer::new(bytes);
@@ -101,13 +104,36 @@ fn decode_known_field(
     match field.cardinality() {
         Cardinality::Repeated => decode_repeated(msg, field, tag, dec),
         Cardinality::Optional | Cardinality::Required => {
-            let value = decode_single_value(field, tag, dec)?;
-            // For singular fields, last-one-wins (protobuf merge semantics for
-            // scalars); set_field also enforces oneof exclusivity.
-            msg.set_field(field, value);
+            match decode_single_value(field, tag, dec)? {
+                Decoded::Value(value) => {
+                    // For singular fields, last-one-wins (protobuf merge
+                    // semantics for scalars); set_field also enforces oneof
+                    // exclusivity.
+                    msg.set_field(field, value);
+                }
+                // A closed enum treats an unrecognised number as an unknown
+                // field, exactly as proto2 always has: it is preserved raw so a
+                // decode → encode round trip is byte-identical, but it is not
+                // readable through the field.
+                Decoded::ClosedEnumMiss(raw) => {
+                    msg.unknown.push_varint(tag.field_number, raw);
+                }
+            }
             Ok(())
         }
     }
+}
+
+/// The outcome of decoding one scalar element.
+///
+/// Everything except a closed enum's unrecognised number produces a value; that
+/// one case carries the raw varint through to the unknown-field set instead, so
+/// no bytes are lost and none are re-synthesised.
+enum Decoded {
+    /// A value for the field.
+    Value(Value),
+    /// A number rejected by a closed enum, as read from the wire.
+    ClosedEnumMiss(u64),
 }
 
 /// Decode a repeated field element, appending to (or creating) its list.
@@ -122,16 +148,30 @@ fn decode_repeated(
         let payload = dec.read_length_delimited().map_err(wire_err)?;
         let mut inner = DecodeBuffer::new(payload);
         let mut decoded = Vec::new();
+        let mut rejected = Vec::new();
         while !inner.is_empty() {
-            decoded.push(decode_scalar_from(field.kind(), &mut inner)?);
+            match decode_scalar_from(field, field.kind(), &mut inner)? {
+                Decoded::Value(value) => decoded.push(value),
+                Decoded::ClosedEnumMiss(raw) => rejected.push(raw),
+            }
         }
         append_to_list(msg, field, decoded);
+        // Numbers a closed enum rejects leave the packed run and become
+        // individual unknown varint entries — the same placement `protoc`
+        // produces. A round trip is therefore semantically faithful but not
+        // byte-identical for this case, because the surviving elements are
+        // re-packed without the rejected ones.
+        for raw in rejected {
+            msg.unknown.push_varint(tag.field_number, raw);
+        }
         return Ok(());
     }
 
     // Unpacked encoding: one tag+value per element.
-    let value = decode_single_value(field, tag, dec)?;
-    append_to_list(msg, field, vec![value]);
+    match decode_single_value(field, tag, dec)? {
+        Decoded::Value(value) => append_to_list(msg, field, vec![value]),
+        Decoded::ClosedEnumMiss(raw) => msg.unknown.push_varint(tag.field_number, raw),
+    }
     Ok(())
 }
 
@@ -158,9 +198,32 @@ fn decode_single_value(
     field: &FieldDescriptor,
     tag: Tag,
     dec: &mut DecodeBuffer<'_>,
-) -> Result<Value, ReflectError> {
+) -> Result<Decoded, ReflectError> {
     match field.kind() {
-        Kind::Group(_) => Err(group_unsupported()),
+        Kind::Group(idx) => {
+            if tag.wire_type != WireType::SGroup {
+                return Err(ReflectError::Field(format!(
+                    "group field '{}' expected start-group wire type, got {}",
+                    field.name(),
+                    tag.wire_type
+                )));
+            }
+            let nested_desc = MessageDescriptor {
+                pool: field.pool.clone(),
+                index: idx,
+            };
+            // A group is a message whose body is delimited by start/end-group
+            // tags rather than a length prefix. `read_group_body` returns the
+            // body as a self-contained field stream (consuming the matching
+            // end-group tag); `nested` then decodes it under the shared
+            // recursion budget, so group-in-group nesting is bounded exactly
+            // like message-in-message.
+            let body = dec.read_group_body(tag.field_number).map_err(wire_err)?;
+            let mut nested_dec = dec.nested(body).map_err(wire_err)?;
+            let mut nested = DynamicMessage::new(nested_desc);
+            decode_into(&mut nested, &mut nested_dec)?;
+            Ok(Decoded::Value(Value::Message(Box::new(nested))))
+        }
         Kind::Message(idx) => {
             if tag.wire_type != WireType::Len {
                 return Err(ReflectError::Field(format!(
@@ -180,7 +243,7 @@ fn decode_single_value(
             let mut nested_dec = dec.nested(payload).map_err(wire_err)?;
             let mut nested = DynamicMessage::new(nested_desc);
             decode_into(&mut nested, &mut nested_dec)?;
-            Ok(Value::Message(Box::new(nested)))
+            Ok(Decoded::Value(Value::Message(Box::new(nested))))
         }
         kind => decode_scalar_with_tag(kind, tag, dec, field),
     }
@@ -192,7 +255,7 @@ fn decode_scalar_with_tag(
     tag: Tag,
     dec: &mut DecodeBuffer<'_>,
     field: &FieldDescriptor,
-) -> Result<Value, ReflectError> {
+) -> Result<Decoded, ReflectError> {
     let expected = scalar_wire_type(kind)?;
     if tag.wire_type != expected {
         return Err(ReflectError::Field(format!(
@@ -201,12 +264,16 @@ fn decode_scalar_with_tag(
             tag.wire_type
         )));
     }
-    decode_scalar_from(kind, dec)
+    decode_scalar_from(field, kind, dec)
 }
 
 /// Decode a scalar value of `kind` from the buffer (wire type already known to
 /// match). Used for both single values and packed elements.
-fn decode_scalar_from(kind: Kind, dec: &mut DecodeBuffer<'_>) -> Result<Value, ReflectError> {
+fn decode_scalar_from(
+    field: &FieldDescriptor,
+    kind: Kind,
+    dec: &mut DecodeBuffer<'_>,
+) -> Result<Decoded, ReflectError> {
     let value = match kind {
         Kind::Double => Value::F64(dec.read_double().map_err(wire_err)?),
         Kind::Float => Value::F32(dec.read_float().map_err(wire_err)?),
@@ -230,16 +297,55 @@ fn decode_scalar_from(kind: Kind, dec: &mut DecodeBuffer<'_>) -> Result<Value, R
         Kind::Sfixed32 => Value::I32(dec.read_fixed32().map_err(wire_err)? as i32),
         Kind::Sfixed64 => Value::I64(dec.read_fixed64().map_err(wire_err)? as i64),
         Kind::Bool => Value::Bool(dec.read_varint().map_err(wire_err)? != 0),
-        Kind::String => Value::String(dec.read_string().map_err(wire_err)?.to_owned()),
+        Kind::String => decode_string(field, dec)?,
         Kind::Bytes => Value::Bytes(dec.read_length_delimited().map_err(wire_err)?.to_vec()),
-        Kind::Enum(_) => Value::EnumNumber(dec.read_varint().map_err(wire_err)? as i32),
+        Kind::Enum(_) => {
+            let raw = dec.read_varint().map_err(wire_err)?;
+            let number = raw as i32;
+            // `features.enum_type = CLOSED` (the proto2 baseline) means a
+            // number outside the declared set is not a legal value for the
+            // field; it belongs in the unknown-field set. An OPEN enum keeps
+            // the raw number so a value added by a newer schema survives.
+            let closed = field.enum_type().is_some_and(|enum_desc| {
+                enum_desc.is_closed() && enum_desc.get_value(number).is_none()
+            });
+            if closed {
+                return Ok(Decoded::ClosedEnumMiss(raw));
+            }
+            Value::EnumNumber(number)
+        }
         Kind::Message(_) | Kind::Group(_) => {
             return Err(ReflectError::Field(
                 "message/group kind is not a scalar".to_owned(),
             ))
         }
     };
-    Ok(value)
+    Ok(Decoded::Value(value))
+}
+
+/// Decode a `string` field's payload, honouring `features.utf8_validation`.
+///
+/// `VERIFY` (proto3 and the Editions default) rejects a payload that is not
+/// valid UTF-8. `NONE` (the proto2 baseline, and whatever an edition scope asks
+/// for) accepts it: valid text still becomes a [`Value::String`], and only a
+/// genuinely invalid payload falls through to
+/// [`Value::UnvalidatedString`], which preserves the bytes verbatim. Keeping
+/// the common case on `Value::String` means enabling NONE does not change the
+/// JSON or text representation of well-formed data.
+fn decode_string(
+    field: &FieldDescriptor,
+    dec: &mut DecodeBuffer<'_>,
+) -> Result<Value, ReflectError> {
+    if field.validates_utf8() {
+        return Ok(Value::String(
+            dec.read_string().map_err(wire_err)?.to_owned(),
+        ));
+    }
+    let bytes = dec.read_length_delimited().map_err(wire_err)?;
+    match core::str::from_utf8(bytes) {
+        Ok(text) => Ok(Value::String(text.to_owned())),
+        Err(_) => Ok(Value::UnvalidatedString(bytes.to_vec())),
+    }
 }
 
 /// Decode one `map<K, V>` synthetic entry message and merge it into the map.
@@ -283,20 +389,45 @@ fn decode_map_entry(
     let mut entry_dec = dec.nested(payload).map_err(wire_err)?;
     while !entry_dec.is_empty() {
         let entry_tag = entry_dec.read_tag().map_err(wire_err)?;
-        match entry_tag.field_number {
-            1 => key_val = decode_single_value(&key_field, entry_tag, &mut entry_dec)?,
-            2 => val_val = decode_single_value(&value_field, entry_tag, &mut entry_dec)?,
-            _ => entry_dec
-                .skip_field(entry_tag.wire_type)
-                .map_err(wire_err)?,
+        let (target, target_field) = match entry_tag.field_number {
+            1 => (&mut key_val, &key_field),
+            2 => (&mut val_val, &value_field),
+            _ => {
+                entry_dec
+                    .skip_field(entry_tag.wire_type)
+                    .map_err(wire_err)?;
+                continue;
+            }
+        };
+        match decode_single_value(target_field, entry_tag, &mut entry_dec)? {
+            Decoded::Value(value) => *target = value,
+            // A closed enum rejected the entry's value. `protoc` moves the
+            // whole entry into the unknown-field set rather than inserting a
+            // half-decoded pair, so the map keeps only entries it fully
+            // understands and the raw bytes still survive a re-encode.
+            Decoded::ClosedEnumMiss(_) => {
+                msg.unknown
+                    .push_length_delimited(field.number(), payload.to_vec());
+                return Ok(());
+            }
         }
     }
 
     let map_key = value_to_map_key(&key_val).ok_or_else(|| {
-        ReflectError::Field(format!(
-            "map field '{}' has an unsupported key type",
-            field.name()
-        ))
+        if matches!(key_val, Value::UnvalidatedString(_)) {
+            // Only reachable with features.utf8_validation = NONE on the entry's
+            // key field. A map key has to be hashable *and* comparable as text,
+            // so an unvalidated payload cannot be admitted.
+            ReflectError::Field(format!(
+                "map field '{}' has a key that is not valid UTF-8",
+                field.name()
+            ))
+        } else {
+            ReflectError::Field(format!(
+                "map field '{}' has an unsupported key type",
+                field.name()
+            ))
+        }
     })?;
 
     let entry = msg
@@ -340,7 +471,26 @@ fn decode_unknown_field(
             let payload = dec.read_length_delimited().map_err(wire_err)?;
             unknown.push_length_delimited(tag.field_number, payload.to_vec());
         }
-        WireType::SGroup | WireType::EGroup => return Err(group_unsupported()),
+        WireType::SGroup => {
+            // Preserve an unknown group verbatim so a decode → encode round-trip
+            // stays byte-identical. The stored bytes are the body plus the
+            // re-encoded end-group tag, matching what `UnknownFields::encode_to`
+            // writes after re-emitting the start-group tag.
+            let body = dec.read_group_body(tag.field_number).map_err(wire_err)?;
+            let mut raw = body.to_vec();
+            let mut end = EncodeBuffer::new();
+            end.write_tag(tag.field_number, WireType::EGroup)
+                .map_err(wire_err)?;
+            raw.extend_from_slice(end.as_bytes());
+            unknown.push_group(tag.field_number, raw);
+        }
+        WireType::EGroup => {
+            // A bare end-group with no matching start-group is malformed.
+            return Err(ReflectError::Field(format!(
+                "unexpected end-group tag for field {}",
+                tag.field_number
+            )));
+        }
     }
     Ok(())
 }
@@ -447,7 +597,25 @@ fn encode_single(
     field_number: u32,
 ) -> Result<(), ReflectError> {
     match field.kind() {
-        Kind::Group(_) => Err(group_unsupported()),
+        Kind::Group(_) => {
+            let nested = match value {
+                Value::Message(m) => m,
+                _ => {
+                    return Err(ReflectError::Field(format!(
+                        "group field '{}' holds a non-message value",
+                        field.name()
+                    )))
+                }
+            };
+            // A group is written as a start-group tag, the body fields inline
+            // (no length prefix), then an end-group tag with the same number.
+            buf.write_tag(field_number, WireType::SGroup)
+                .map_err(wire_err)?;
+            nested.encode(buf)?;
+            buf.write_tag(field_number, WireType::EGroup)
+                .map_err(wire_err)?;
+            Ok(())
+        }
         Kind::Message(_) => {
             let nested = match value {
                 Value::Message(m) => m,
@@ -494,7 +662,10 @@ fn encode_scalar_payload(
         Kind::Sfixed32 => buf.write_fixed32(expect_i32(value, field)? as u32),
         Kind::Sfixed64 => buf.write_fixed64(expect_i64(value, field)? as u64),
         Kind::Bool => buf.write_bool(expect_bool(value, field)?),
-        Kind::String => buf.write_string(expect_str(value, field)?),
+        // Both `Value::String` and `Value::UnvalidatedString` are `string`
+        // payloads; writing the raw bytes keeps a NONE-validated field
+        // byte-identical across a decode → encode round trip.
+        Kind::String => buf.write_length_delimited(expect_string_bytes(value, field)?),
         Kind::Bytes => buf.write_length_delimited(expect_bytes(value, field)?),
         Kind::Enum(_) => buf.write_varint_i32(expect_enum(value, field)?),
         Kind::Message(_) | Kind::Group(_) => {
@@ -547,11 +718,6 @@ fn value_to_map_key(value: &Value) -> Option<MapKey> {
     }
 }
 
-/// Build the canonical "groups unsupported" error.
-fn group_unsupported() -> ReflectError {
-    ReflectError::Field("protobuf groups (wire types 3/4) are unsupported".to_owned())
-}
-
 /// Map a [`oxiproto_core::wire::WireError`] to a [`ReflectError`].
 fn wire_err(e: oxiproto_core::wire::WireError) -> ReflectError {
     ReflectError::Field(format!("wire format error: {e}"))
@@ -588,8 +754,13 @@ fn expect_u64(value: &Value, field: &FieldDescriptor) -> Result<u64, ReflectErro
 fn expect_bool(value: &Value, field: &FieldDescriptor) -> Result<bool, ReflectError> {
     value.as_bool().ok_or_else(|| type_mismatch(field, "bool"))
 }
-fn expect_str<'a>(value: &'a Value, field: &FieldDescriptor) -> Result<&'a str, ReflectError> {
-    value.as_str().ok_or_else(|| type_mismatch(field, "string"))
+fn expect_string_bytes<'a>(
+    value: &'a Value,
+    field: &FieldDescriptor,
+) -> Result<&'a [u8], ReflectError> {
+    value
+        .as_string_bytes()
+        .ok_or_else(|| type_mismatch(field, "string"))
 }
 fn expect_bytes<'a>(value: &'a Value, field: &FieldDescriptor) -> Result<&'a [u8], ReflectError> {
     value

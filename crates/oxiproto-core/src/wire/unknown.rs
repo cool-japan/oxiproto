@@ -102,6 +102,20 @@ impl UnknownFields {
         });
     }
 
+    /// Add a group unknown field.
+    ///
+    /// `data` is the raw bytes that follow the start-group tag: the group's
+    /// body fields **plus** the matching end-group tag, i.e. exactly what
+    /// [`encode_to`](Self::encode_to) writes after re-emitting the start-group
+    /// tag. Preserving groups verbatim lets a decode → encode round-trip stay
+    /// byte-identical for schemas that still use proto2 groups.
+    pub fn push_group(&mut self, field_number: u32, data: Vec<u8>) {
+        self.fields.push(UnknownField {
+            field_number,
+            value: UnknownValue::Group(data),
+        });
+    }
+
     /// Returns an iterator over all unknown fields.
     pub fn iter(&self) -> core::slice::Iter<'_, UnknownField> {
         self.fields.iter()

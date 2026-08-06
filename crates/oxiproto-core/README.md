@@ -11,21 +11,21 @@ It contains no code generation (that lives in `oxiproto-codegen`), no `build.rs`
 
 ```toml
 [dependencies]
-oxiproto-core = "0.1.4"
+oxiproto-core = "0.1.5"
 ```
 
 `no_std` (relying on `alloc`):
 
 ```toml
 [dependencies]
-oxiproto-core = { version = "0.1.4", default-features = false, features = ["alloc"] }
+oxiproto-core = { version = "0.1.5", default-features = false, features = ["alloc"] }
 ```
 
 With Serde derives on the wire helper types:
 
 ```toml
 [dependencies]
-oxiproto-core = { version = "0.1.4", features = ["serde"] }
+oxiproto-core = { version = "0.1.5", features = ["serde"] }
 ```
 
 ## Quick Start

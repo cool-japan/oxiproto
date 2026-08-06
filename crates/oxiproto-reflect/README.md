@@ -11,14 +11,14 @@ The crate ships **two parallel reflection surfaces**. The default surface is a t
 
 ```toml
 [dependencies]
-oxiproto-reflect = "0.1.4"
+oxiproto-reflect = "0.1.5"
 ```
 
 Or, via the facade:
 
 ```toml
 [dependencies]
-oxiproto = { version = "0.1.4", features = ["reflect"] }
+oxiproto = { version = "0.1.5", features = ["reflect"] }
 ```
 
 ## Quick Start
